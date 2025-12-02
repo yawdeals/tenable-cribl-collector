@@ -45,7 +45,12 @@ class CriblHECHandler:
             logging.error("Failed to send event to Cribl: {0}".format(e))
             return False
 
-    def send_batch(self, events, sourcetype=None, feed_type=None, feed_name=None):
+    def send_batch(
+            self,
+            events,
+            sourcetype=None,
+            feed_type=None,
+            feed_name=None):
         # Send multiple events in batch mode for better performance
         if not events:
             return 0
@@ -62,7 +67,7 @@ class CriblHECHandler:
                 payload['sourcetype'] = batch_sourcetype
                 payload['source'] = self.source
                 payload['index'] = self.index
-                
+
                 # Add feed classification as HEC fields for easy filtering
                 if feed_type:
                     payload['fields'] = {
@@ -78,8 +83,11 @@ class CriblHECHandler:
         # Flush the batch to send all buffered events
         try:
             self.hec_handler.flushBatch()
-            logging.info("HEC batch sent: {0} events | feed_type={1} | feed_name={2}".format(
-                success_count, feed_type or 'n/a', feed_name or 'n/a'))
+            logging.info(
+                "HEC batch sent: {0} events | feed_type={1} | feed_name={2}".format(
+                    success_count,
+                    feed_type or 'n/a',
+                    feed_name or 'n/a'))
         except Exception as e:
             logging.error("Error flushing batch: {0}".format(e))
 

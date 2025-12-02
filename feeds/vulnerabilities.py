@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 import time
 from feeds.base import BaseFeedProcessor
+from feeds.assets import _safe_export_with_retry
 
 
 class VulnerabilityFeedProcessor(BaseFeedProcessor):
 
     def __init__(self, tenable_client, checkpoint_mgr,
                  hec_handler, batch_size=5000, max_events=0):
-        super(VulnerabilityFeedProcessor, self).__init__(
-            tenable_client, checkpoint_mgr, hec_handler,
-            "Active Vulnerabilities", "tenableio_vulnerability", "tenable:io:vulnerability", "vulnerability", batch_size, max_events)
+        super(
+            VulnerabilityFeedProcessor,
+            self).__init__(
+            tenable_client,
+            checkpoint_mgr,
+            hec_handler,
+            "Active Vulnerabilities",
+            "tenableio_vulnerability",
+            "tenable:io:vulnerability",
+            "vulnerability",
+            batch_size,
+            max_events)
 
     def process(self):
         self.log_start()
@@ -21,8 +31,13 @@ class VulnerabilityFeedProcessor(BaseFeedProcessor):
             self.logger.info(
                 "(This may take several minutes for large environments)")
 
-            for vuln in self.tenable.exports.vulns(
-                    severity=['medium', 'high', 'critical']):
+            for vuln in _safe_export_with_retry(
+                lambda: self.tenable.exports.vulns(
+                    severity=[
+                        'medium',
+                        'high',
+                        'critical']),
+                    "Active Vulnerabilities"):
                 vuln_key = "{0}_{1}_{2}_{3}".format(
                     vuln.get('asset', {}).get('uuid', 'unknown'),
                     vuln.get('plugin', {}).get('id', 'unknown'),
@@ -54,9 +69,18 @@ class VulnerabilityNoInfoProcessor(BaseFeedProcessor):
 
     def __init__(self, tenable_client, checkpoint_mgr,
                  hec_handler, batch_size=5000, max_events=0):
-        super(VulnerabilityNoInfoProcessor, self).__init__(
-            tenable_client, checkpoint_mgr, hec_handler,
-            "Informational Vulnerabilities", "tenableio_vulnerability_no_info", "tenable:io:vulnerability:info", "vulnerability_info", batch_size, max_events)
+        super(
+            VulnerabilityNoInfoProcessor,
+            self).__init__(
+            tenable_client,
+            checkpoint_mgr,
+            hec_handler,
+            "Informational Vulnerabilities",
+            "tenableio_vulnerability_no_info",
+            "tenable:io:vulnerability:info",
+            "vulnerability_info",
+            batch_size,
+            max_events)
 
     def process(self):
         self.log_start()
@@ -65,7 +89,10 @@ class VulnerabilityNoInfoProcessor(BaseFeedProcessor):
         try:
             self.logger.info(
                 "Initiating informational vulnerability export (severity: info)...")
-            for vuln in self.tenable.exports.vulns(severity=['info']):
+            for vuln in _safe_export_with_retry(
+                lambda: self.tenable.exports.vulns(severity=['info']),
+                "Informational Vulnerabilities"
+            ):
                 vuln_key = "{0}_{1}_{2}_{3}".format(
                     vuln.get('asset', {}).get('uuid', 'unknown'),
                     vuln.get('plugin', {}).get('id', 'unknown'),
@@ -97,9 +124,18 @@ class VulnerabilitySelfScanProcessor(BaseFeedProcessor):
 
     def __init__(self, tenable_client, checkpoint_mgr,
                  hec_handler, batch_size=5000, max_events=0):
-        super(VulnerabilitySelfScanProcessor, self).__init__(
-            tenable_client, checkpoint_mgr, hec_handler,
-            "Agent-Based Vulnerabilities", "tenableio_vulnerability_self_scan", "tenable:io:vulnerability:self_scan", "vulnerability_self_scan", batch_size, max_events)
+        super(
+            VulnerabilitySelfScanProcessor,
+            self).__init__(
+            tenable_client,
+            checkpoint_mgr,
+            hec_handler,
+            "Agent-Based Vulnerabilities",
+            "tenableio_vulnerability_self_scan",
+            "tenable:io:vulnerability:self_scan",
+            "vulnerability_self_scan",
+            batch_size,
+            max_events)
 
     def process(self):
         self.log_start()
@@ -107,7 +143,10 @@ class VulnerabilitySelfScanProcessor(BaseFeedProcessor):
 
         try:
             self.logger.info("Initiating agent-based vulnerability export...")
-            for vuln in self.tenable.exports.vulns():
+            for vuln in _safe_export_with_retry(
+                lambda: self.tenable.exports.vulns(),
+                "Agent-Based Vulnerabilities"
+            ):
                 asset_info = vuln.get('asset', {})
                 if not asset_info.get('has_agent', False):
                     continue
@@ -142,9 +181,18 @@ class FixedVulnerabilityProcessor(BaseFeedProcessor):
 
     def __init__(self, tenable_client, checkpoint_mgr,
                  hec_handler, batch_size=5000, max_events=0):
-        super(FixedVulnerabilityProcessor, self).__init__(
-            tenable_client, checkpoint_mgr, hec_handler,
-            "Fixed Vulnerabilities", "tenableio_fixed_vulnerability", "tenable:io:vulnerability:fixed", "fixed_vulnerability", batch_size, max_events)
+        super(
+            FixedVulnerabilityProcessor,
+            self).__init__(
+            tenable_client,
+            checkpoint_mgr,
+            hec_handler,
+            "Fixed Vulnerabilities",
+            "tenableio_fixed_vulnerability",
+            "tenable:io:vulnerability:fixed",
+            "fixed_vulnerability",
+            batch_size,
+            max_events)
 
     def process(self):
         self.log_start()
@@ -162,7 +210,10 @@ class FixedVulnerabilityProcessor(BaseFeedProcessor):
             self.logger.info(
                 "(This may take several minutes for large environments)")
 
-            for vuln in self.tenable.exports.vulns():
+            for vuln in _safe_export_with_retry(
+                lambda: self.tenable.exports.vulns(),
+                "Fixed Vulnerabilities"
+            ):
                 vuln_key = "{0}_{1}_{2}_{3}".format(
                     vuln.get('asset', {}).get('uuid', 'unknown'),
                     vuln.get('plugin', {}).get('id', 'unknown'),
@@ -189,8 +240,8 @@ class FixedVulnerabilityProcessor(BaseFeedProcessor):
                         'port': parts[2] if len(parts) > 2 else '0',
                         'protocol': parts[3] if len(parts) > 3 else 'tcp',
                         'event_type': 'vulnerability_fixed',
-                        'detected_at': int(time.time())
-                    }
+                        'detected_at': int(
+                            time.time())}
                     if self.send_event(fix_event):
                         event_count += 1
                         self.log_progress(event_count)

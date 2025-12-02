@@ -13,7 +13,8 @@ class ProcessLock:
         # Initialize lock with file path and timeout
         self.lock_dir = lock_dir
         self.lock_file = os.path.join(lock_dir, lock_file)
-        self.timeout = timeout  # Stale lock timeout in seconds (default 10 min)
+        # Stale lock timeout in seconds (default 10 min)
+        self.timeout = timeout
         self.logger = logging.getLogger(__name__)
 
         # Create lock directory if needed
@@ -32,8 +33,9 @@ class ProcessLock:
                 with open(self.lock_file, 'r') as f:
                     lock_data = f.read().strip()
 
-                self.logger.warning("Another process is already running (PID: {0}, Age: {1:.0f}s)".format(
-                    lock_data, lock_age))
+                self.logger.warning(
+                    "Another process is already running (PID: {0}, Age: {1:.0f}s)".format(
+                        lock_data, lock_age))
                 return False
             else:
                 # Stale lock - previous process crashed or timed out

@@ -1,16 +1,90 @@
 #!/usr/bin/env python3
 import time
+import logging
 from feeds.base import BaseFeedProcessor
+
+
+def _safe_export_with_retry(
+        export_func,
+        feed_name,
+        max_retries=3,
+        initial_wait=300):
+    """
+    Wrapper to safely call Tenable export functions with retry logic for 429 errors.
+
+    Args:
+        export_func: The export function to call (e.g., lambda: tenable.exports.assets())
+        feed_name: Name of the feed for logging
+        max_retries: Maximum number of retries (default: 3)
+        initial_wait: Initial wait time in seconds for 429 errors (default: 5 minutes)
+
+    Yields:
+        Export results from the export_func
+    """
+    logger = logging.getLogger(__name__)
+    wait_time = initial_wait
+
+    for attempt in range(max_retries + 1):
+        try:
+            logger.info("Starting {0} export (attempt {1}/{2})...".format(
+                feed_name, attempt + 1, max_retries + 1))
+
+            export_started = False
+            for item in export_func():
+                export_started = True
+                yield item
+
+            # If we get here, export completed successfully
+            return
+
+        except Exception as e:
+            error_msg = str(e).lower()
+
+            # Only retry if export hasn't started yet (prevents duplicate
+            # items)
+            if not export_started:
+                # Check for 429 rate limit / duplicate export error
+                if '429' in error_msg or 'duplicate export' in error_msg or 'export already running' in error_msg:
+                    if attempt < max_retries:
+                        logger.warning(
+                            "Export already running or rate limited (429). "
+                            "Waiting {0} seconds for existing export to complete... "
+                            "(Attempt {1}/{2})".format(wait_time, attempt + 1, max_retries + 1))
+                        logger.info(
+                            "TIP: If you cancelled a previous run, Tenable's export may still be processing. "
+                            "This can take 10-30 minutes to complete on Tenable's side.")
+
+                        time.sleep(wait_time)
+                        # Exponential backoff, max 30 min
+                        wait_time = min(wait_time * 1.5, 1800)
+                        continue
+                    else:
+                        logger.error(
+                            "Max retries exceeded. An export is still running on Tenable's side. "
+                            "Please wait 30-60 minutes and try again, or contact Tenable support.")
+                        raise
+
+            # For other errors or if export already started, raise immediately
+            logger.error("Export error for {0}: {1}".format(feed_name, str(e)))
+            raise
 
 
 class AssetFeedProcessor(BaseFeedProcessor):
 
     def __init__(self, tenable_client, checkpoint_mgr,
                  hec_handler, batch_size=5000, max_events=0):
-        super(AssetFeedProcessor, self).__init__(
-            tenable_client, checkpoint_mgr, hec_handler,
-            "Asset Inventory", "tenableio_asset", "tenable:io:asset", "asset", batch_size, max_events
-        )
+        super(
+            AssetFeedProcessor,
+            self).__init__(
+            tenable_client,
+            checkpoint_mgr,
+            hec_handler,
+            "Asset Inventory",
+            "tenableio_asset",
+            "tenable:io:asset",
+            "asset",
+            batch_size,
+            max_events)
 
     def process(self):
         self.log_start()
@@ -21,7 +95,10 @@ class AssetFeedProcessor(BaseFeedProcessor):
             self.logger.info(
                 "(This may take several minutes for large environments)")
 
-            for asset in self.tenable.exports.assets():
+            for asset in _safe_export_with_retry(
+                lambda: self.tenable.exports.assets(),
+                "Asset Inventory"
+            ):
                 asset_id = asset.get('id')
                 if self.is_processed(asset_id):
                     continue
@@ -50,10 +127,18 @@ class AssetSelfScanProcessor(BaseFeedProcessor):
 
     def __init__(self, tenable_client, checkpoint_mgr,
                  hec_handler, batch_size=5000, max_events=0):
-        super(AssetSelfScanProcessor, self).__init__(
-            tenable_client, checkpoint_mgr, hec_handler,
-            "Agent-Based Assets", "tenableio_asset_self_scan", "tenable:io:asset:self_scan", "asset_self_scan", batch_size, max_events
-        )
+        super(
+            AssetSelfScanProcessor,
+            self).__init__(
+            tenable_client,
+            checkpoint_mgr,
+            hec_handler,
+            "Agent-Based Assets",
+            "tenableio_asset_self_scan",
+            "tenable:io:asset:self_scan",
+            "asset_self_scan",
+            batch_size,
+            max_events)
 
     def process(self):
         self.log_start()
@@ -61,7 +146,10 @@ class AssetSelfScanProcessor(BaseFeedProcessor):
 
         try:
             self.logger.info("Initiating agent-based asset export...")
-            for asset in self.tenable.exports.assets():
+            for asset in _safe_export_with_retry(
+                lambda: self.tenable.exports.assets(),
+                "Agent-Based Assets"
+            ):
                 if not asset.get('has_agent', False):
                     continue
 
@@ -89,28 +177,89 @@ class DeletedAssetProcessor(BaseFeedProcessor):
 
     def __init__(self, tenable_client, checkpoint_mgr,
                  hec_handler, batch_size=5000, max_events=0):
-        super(DeletedAssetProcessor, self).__init__(
-            tenable_client, checkpoint_mgr, hec_handler,
-            "Deleted Assets", "tenableio_deleted_asset", "tenable:io:asset:deleted", "deleted_asset", batch_size, max_events)
+        super(
+            DeletedAssetProcessor,
+            self).__init__(
+            tenable_client,
+            checkpoint_mgr,
+            hec_handler,
+            "Deleted Assets",
+            "tenableio_deleted_asset",
+            "tenable:io:asset:deleted",
+            "deleted_asset",
+            batch_size,
+            max_events)
+
+        # Configure scan interval (default: only scan once per 24 hours)
+        import os
+        self.scan_interval_hours = int(
+            os.getenv('DELETED_ASSET_SCAN_INTERVAL_HOURS', 24))
+
+    def _should_run_full_scan(self):
+        """Check if enough time has passed since last full scan"""
+        # Load checkpoint first to ensure cache is populated
+        self.checkpoint._load_checkpoint('deleted_asset')
+        checkpoint_data = self.checkpoint._cache.get('deleted_asset', {})
+        last_scan = checkpoint_data.get('last_full_scan', 0)
+        current_time = int(time.time())
+        time_since_scan = current_time - last_scan
+        hours_since_scan = time_since_scan / 3600
+
+        if hours_since_scan < self.scan_interval_hours:
+            self.logger.info(
+                "Skipping deleted asset scan - last scan was {0:.1f} hours ago (interval: {1} hours)".format(
+                    hours_since_scan, self.scan_interval_hours))
+            return False
+
+        return True
 
     def process(self):
         self.log_start()
         event_count = 0
 
         try:
+            # Check if we should run the expensive full scan
+            if not self._should_run_full_scan():
+                self.logger.info(
+                    "Deleted asset detection skipped (run too recently)")
+                return 0
+
             previous_assets = self.get_processed_ids()
             self.logger.info(
                 "Found {0} assets in previous checkpoint".format(
                     len(previous_assets)))
 
+            if not previous_assets:
+                self.logger.info(
+                    "No previous assets to compare - building baseline only")
+
             current_assets = set()
             self.logger.info("Fetching current assets from Tenable...")
-            for asset in self.tenable.exports.assets():
-                current_assets.add(asset.get('id'))
-
             self.logger.info(
-                "Found {0} current assets".format(
-                    len(current_assets)))
+                "(This may take 1-2 hours for large environments - runs max once per {0} hours)".format(
+                    self.scan_interval_hours))
+
+            asset_count = 0
+            start_time = time.time()
+            for asset in _safe_export_with_retry(
+                lambda: self.tenable.exports.assets(),
+                "Deleted Assets"
+            ):
+                current_assets.add(asset.get('id'))
+                asset_count += 1
+
+                # Log progress every 1000 assets with time estimate
+                if asset_count % 1000 == 0:
+                    elapsed = time.time() - start_time
+                    rate = asset_count / elapsed if elapsed > 0 else 0
+                    self.logger.info("Fetched {0} assets... ({1:.0f} assets/sec)".format(
+                        asset_count, rate))
+
+            elapsed_total = time.time() - start_time
+            self.logger.info(
+                "Found {0} current assets in {1:.1f} minutes".format(
+                    len(current_assets), elapsed_total / 60))
+
             deleted_assets = previous_assets - current_assets
 
             if deleted_assets:
@@ -129,8 +278,22 @@ class DeletedAssetProcessor(BaseFeedProcessor):
             else:
                 self.logger.info("No deleted assets detected")
 
+            # Update checkpoint with current assets
             for asset_id in current_assets:
                 self.mark_processed(asset_id)
+
+            # Record the scan time in checkpoint
+            try:
+                self.checkpoint._load_checkpoint('deleted_asset')
+                checkpoint_data = self.checkpoint._cache.get(
+                    'deleted_asset', {})
+                checkpoint_data['last_full_scan'] = int(time.time())
+                self.checkpoint._cache['deleted_asset'] = checkpoint_data
+                self.checkpoint._dirty_keys.add('deleted_asset')
+            except Exception as checkpoint_err:
+                self.logger.warning(
+                    "Failed to update scan timestamp: {0}".format(
+                        str(checkpoint_err)))
 
             self.flush_events()
 
@@ -147,9 +310,18 @@ class TerminatedAssetProcessor(BaseFeedProcessor):
 
     def __init__(self, tenable_client, checkpoint_mgr,
                  hec_handler, batch_size=5000, max_events=0):
-        super(TerminatedAssetProcessor, self).__init__(
-            tenable_client, checkpoint_mgr, hec_handler,
-            "Terminated Assets", "tenableio_terminated_asset", "tenable:io:asset:terminated", "terminated_asset", batch_size, max_events)
+        super(
+            TerminatedAssetProcessor,
+            self).__init__(
+            tenable_client,
+            checkpoint_mgr,
+            hec_handler,
+            "Terminated Assets",
+            "tenableio_terminated_asset",
+            "tenable:io:asset:terminated",
+            "terminated_asset",
+            batch_size,
+            max_events)
 
     def process(self):
         self.log_start()
@@ -157,7 +329,10 @@ class TerminatedAssetProcessor(BaseFeedProcessor):
 
         try:
             self.logger.info("Initiating terminated asset export...")
-            for asset in self.tenable.exports.assets():
+            for asset in _safe_export_with_retry(
+                lambda: self.tenable.exports.assets(),
+                "Terminated Assets"
+            ):
                 if 'terminated_at' not in asset or asset.get(
                         'terminated_at') is None:
                     continue

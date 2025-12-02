@@ -7,8 +7,17 @@ import time
 class BaseFeedProcessor(object):
     # Base processor with checkpointing, batching, and deduplication
 
-    def __init__(self, tenable_client, checkpoint_mgr, hec_handler, feed_name,
-                 checkpoint_key, sourcetype, feed_type, batch_size=5000, max_events=0):
+    def __init__(
+            self,
+            tenable_client,
+            checkpoint_mgr,
+            hec_handler,
+            feed_name,
+            checkpoint_key,
+            sourcetype,
+            feed_type,
+            batch_size=5000,
+            max_events=0):
         # Initialize processor with all required components
         self.tenable = tenable_client  # Tenable API client
         self.checkpoint = checkpoint_mgr  # Checkpoint manager for deduplication
@@ -16,7 +25,8 @@ class BaseFeedProcessor(object):
         self.feed_name = feed_name  # Human-readable feed name
         self.checkpoint_key = checkpoint_key  # Unique key for this feed
         self.sourcetype = sourcetype  # HEC sourcetype
-        self.feed_type = feed_type  # Feed classification (asset, vulnerability, etc.)
+        # Feed classification (asset, vulnerability, etc.)
+        self.feed_type = feed_type
         self.batch_size = batch_size  # Events per batch (default 5000)
         self.max_events = max_events  # Max events to process (0 = unlimited)
         self.logger = logging.getLogger(__name__)
@@ -36,26 +46,30 @@ class BaseFeedProcessor(object):
         if count > 0 and count % interval == 0:
             elapsed = time.time() - self._start_time
             rate = count / elapsed if elapsed > 0 else 0
-            self.logger.info("[{0}] {1:,} events processed ({2:.0f}/sec, {3:.1f}min elapsed)".format(
-                self.feed_name, count, rate, elapsed / 60))
+            self.logger.info(
+                "[{0}] {1:,} events processed ({2:.0f}/sec, {3:.1f}min elapsed)".format(
+                    self.feed_name, count, rate, elapsed / 60))
 
     def should_stop(self, count):
         if self.max_events > 0 and count >= self.max_events:
-            self.logger.info("Reached max_events limit ({0}), stopping {1} feed".format(
-                self.max_events, self.feed_name))
+            self.logger.info(
+                "Reached max_events limit ({0}), stopping {1} feed".format(
+                    self.max_events, self.feed_name))
             return True
         return False
 
     def log_completion(self, count):
         elapsed = time.time() - self._start_time if self._start_time else 0
         rate = count / elapsed if elapsed > 0 else 0
-        self.logger.info("Completed {0} feed: {1:,} events in {2:.1f}min ({3:.0f}/sec)".format(
-            self.feed_name, count, elapsed / 60, rate))
+        self.logger.info(
+            "Completed {0} feed: {1:,} events in {2:.1f}min ({3:.0f}/sec)".format(
+                self.feed_name, count, elapsed / 60, rate))
 
     def send_event(self, event_data, item_id=None):
         # Buffer event for batch sending (auto-flushes when batch size reached)
         try:
-            # Copy event data (feed_type/feed_name added as HEC fields during flush)
+            # Copy event data (feed_type/feed_name added as HEC fields during
+            # flush)
             classified_event = dict(event_data)
 
             # Add to buffer
@@ -81,12 +95,13 @@ class BaseFeedProcessor(object):
 
         try:
             batch_size = len(self._event_buffer)
-            self.logger.info("Sending batch of {0} {1} events to HEC...".format(
-                batch_size, self.feed_name))
+            self.logger.info(
+                "Sending batch of {0} {1} events to HEC...".format(
+                    batch_size, self.feed_name))
 
             # Send batch with feed classification
             success_count = self.hec.send_batch(
-                self._event_buffer, 
+                self._event_buffer,
                 sourcetype=self.sourcetype,
                 feed_type=self.feed_type,
                 feed_name=self.feed_name
@@ -101,14 +116,36 @@ class BaseFeedProcessor(object):
                 self._event_buffer = []
                 self._buffer_ids = []
                 return True
+            elif success_count > 0:
+                # Partial success - mark successful items and log warning
+                self.logger.warning(
+                    "Partial batch send: {0}/{1} events sent successfully".format(
+                        success_count, batch_size))
+
+                # Mark the successful items as processed (assuming first N
+                # items succeeded)
+                for i in range(min(success_count, len(self._buffer_ids))):
+                    self.mark_processed(self._buffer_ids[i])
+
+                # Clear buffers to prevent memory leak (items will be re-sent
+                # on next run via checkpoint)
+                self._event_buffer = []
+                self._buffer_ids = []
+                return False
             else:
-                self.logger.warning("Only {0}/{1} events sent successfully".format(
-                    success_count, batch_size))
+                # Complete failure - clear buffers to prevent memory leak
+                self.logger.error(
+                    "Batch send failed completely - clearing buffer to prevent memory leak")
+                self._event_buffer = []
+                self._buffer_ids = []
                 return False
         except Exception as e:
             self.logger.error(
                 "Failed to flush {0} events: {1}".format(
                     self.feed_name, str(e)))
+            # Clear buffers even on exception to prevent memory leak
+            self._event_buffer = []
+            self._buffer_ids = []
             return False
 
     def is_processed(self, item_id):

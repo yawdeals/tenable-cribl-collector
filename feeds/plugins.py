@@ -1,14 +1,63 @@
 #!/usr/bin/env python3
 from feeds.base import BaseFeedProcessor
+import time
+import logging
+
+
+def _safe_api_call_with_retry(
+        api_func,
+        *args,
+        max_retries=3,
+        initial_wait=60,
+        **kwargs):
+    """
+    Wrapper for Tenable API calls with retry logic for 429 and transient errors.
+    Unlike export functions, these are simple REST calls that don't stream data.
+    """
+    logger = logging.getLogger(__name__)
+
+    for attempt in range(max_retries):
+        try:
+            return api_func(*args, **kwargs)
+        except Exception as e:
+            error_str = str(e)
+
+            # Check for 429 rate limit error
+            if '429' in error_str or 'rate limit' in error_str.lower():
+                if attempt < max_retries - 1:
+                    wait_time = initial_wait * (1.5 ** attempt)
+                    logger.warning(
+                        f"Rate limit (429) on API call, waiting {wait_time:.0f}s before retry {attempt + 1}/{max_retries}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error(
+                        f"Failed after {max_retries} retries due to rate limiting")
+                    raise
+
+            # For non-429 errors, raise immediately
+            raise
+
+    # Should not reach here, but if we do, raise the last exception
+    raise Exception(f"API call failed after {max_retries} retries")
 
 
 class PluginFeedProcessor(BaseFeedProcessor):
 
     def __init__(self, tenable_client, checkpoint_mgr,
                  hec_handler, batch_size=5000, max_events=0):
-        super(PluginFeedProcessor, self).__init__(
-            tenable_client, checkpoint_mgr, hec_handler,
-            "Plugin Metadata", "tenableio_plugin", "tenable:io:plugin", "plugin", batch_size, max_events)
+        super(
+            PluginFeedProcessor,
+            self).__init__(
+            tenable_client,
+            checkpoint_mgr,
+            hec_handler,
+            "Plugin Metadata",
+            "tenableio_plugin",
+            "tenable:io:plugin",
+            "plugin",
+            batch_size,
+            max_events)
 
     def process(self):
         self.log_start()
@@ -16,7 +65,8 @@ class PluginFeedProcessor(BaseFeedProcessor):
 
         try:
             self.logger.info("Fetching plugin families...")
-            families = self.tenable.plugins.families()
+            families = _safe_api_call_with_retry(
+                self.tenable.plugins.families)
             self.logger.info("Found {0} plugin families".format(len(families)))
 
             for family in families:
@@ -26,8 +76,8 @@ class PluginFeedProcessor(BaseFeedProcessor):
                     "Processing plugin family: {0}".format(family_name))
 
                 try:
-                    family_details = self.tenable.plugins.family_details(
-                        family_id)
+                    family_details = _safe_api_call_with_retry(
+                        self.tenable.plugins.family_details, family_id)
                     plugins = family_details.get('plugins', [])
 
                     for plugin_summary in plugins:
@@ -36,8 +86,8 @@ class PluginFeedProcessor(BaseFeedProcessor):
                             continue
 
                         try:
-                            plugin_details = self.tenable.plugins.plugin_details(
-                                plugin_id)
+                            plugin_details = _safe_api_call_with_retry(
+                                self.tenable.plugins.plugin_details, plugin_id)
                             plugin_details['family_name'] = family_name
                             plugin_details['family_id'] = family_id
 
@@ -76,9 +126,18 @@ class ComplianceFeedProcessor(BaseFeedProcessor):
 
     def __init__(self, tenable_client, checkpoint_mgr,
                  hec_handler, batch_size=5000, max_events=0):
-        super(ComplianceFeedProcessor, self).__init__(
-            tenable_client, checkpoint_mgr, hec_handler,
-            "Compliance Findings", "tenableio_compliance", "tenable:io:compliance", "compliance", batch_size, max_events)
+        super(
+            ComplianceFeedProcessor,
+            self).__init__(
+            tenable_client,
+            checkpoint_mgr,
+            hec_handler,
+            "Compliance Findings",
+            "tenableio_compliance",
+            "tenable:io:compliance",
+            "compliance",
+            batch_size,
+            max_events)
 
     def process(self):
         self.log_start()
@@ -88,7 +147,7 @@ class ComplianceFeedProcessor(BaseFeedProcessor):
             last_timestamp = self.get_last_timestamp()
             self.logger.info("Fetching scans since last run...")
 
-            scans = self.tenable.scans.list()
+            scans = _safe_api_call_with_retry(self.tenable.scans.list)
             scan_list = scans.get('scans', [])
             self.logger.info("Found {0} total scans".format(len(scan_list)))
 
@@ -108,7 +167,8 @@ class ComplianceFeedProcessor(BaseFeedProcessor):
                     "Processing compliance findings from scan: {0}".format(scan_name))
 
                 try:
-                    scan_details = self.tenable.scans.details(scan_id)
+                    scan_details = _safe_api_call_with_retry(
+                        self.tenable.scans.details, scan_id)
                     hosts = scan_details.get('hosts', [])
 
                     for host in hosts:
@@ -116,8 +176,8 @@ class ComplianceFeedProcessor(BaseFeedProcessor):
                         hostname = host.get('hostname', 'unknown')
 
                         try:
-                            host_details = self.tenable.scans.host_details(
-                                scan_id, host_id)
+                            host_details = _safe_api_call_with_retry(
+                                self.tenable.scans.host_details, scan_id, host_id)
                             compliance_items = host_details.get(
                                 'compliance', [])
 

@@ -17,8 +17,15 @@ class http_event_collector:
     Splunk HTTP Event Collector class for sending events to Splunk
     """
 
-    def __init__(self, token, http_event_server, host="", http_event_port='8088',
-                 http_event_server_ssl=True, max_bytes=1048576, index=""):
+    def __init__(
+            self,
+            token,
+            http_event_server,
+            host="",
+            http_event_port='8088',
+            http_event_server_ssl=True,
+            max_bytes=1048576,
+            index=""):
         """
         Initialize HEC event collector
 

@@ -12,8 +12,11 @@ from process_lock import ProcessLock
 from tenable_common import CriblHECHandler, setup_logging
 from feeds.assets import (AssetFeedProcessor, AssetSelfScanProcessor,
                           DeletedAssetProcessor, TerminatedAssetProcessor)
-from feeds.vulnerabilities import (VulnerabilityFeedProcessor, VulnerabilityNoInfoProcessor,
-                                   VulnerabilitySelfScanProcessor, FixedVulnerabilityProcessor)
+from feeds.vulnerabilities import (
+    VulnerabilityFeedProcessor,
+    VulnerabilityNoInfoProcessor,
+    VulnerabilitySelfScanProcessor,
+    FixedVulnerabilityProcessor)
 from feeds.plugins import (PluginFeedProcessor, ComplianceFeedProcessor)
 
 
@@ -89,8 +92,7 @@ class TenableIntegration:
             'tenableio_vulnerability_self_scan': VulnerabilitySelfScanProcessor,
             'tenableio_fixed_vulnerability': FixedVulnerabilityProcessor,
             'tenableio_plugin': PluginFeedProcessor,
-            'tenableio_compliance': ComplianceFeedProcessor
-        }
+            'tenableio_compliance': ComplianceFeedProcessor}
 
         processor_class = processor_map.get(feed_name)
         if not processor_class:
@@ -133,11 +135,16 @@ class TenableIntegration:
 
             # All available feed types
             all_feeds = [
-                'tenableio_asset', 'tenableio_asset_self_scan', 'tenableio_compliance',
-                'tenableio_deleted_asset', 'tenableio_fixed_vulnerability', 'tenableio_plugin',
-                'tenableio_terminated_asset', 'tenableio_vulnerability',
-                'tenableio_vulnerability_no_info', 'tenableio_vulnerability_self_scan'
-            ]
+                'tenableio_asset',
+                'tenableio_asset_self_scan',
+                'tenableio_compliance',
+                'tenableio_deleted_asset',
+                'tenableio_fixed_vulnerability',
+                'tenableio_plugin',
+                'tenableio_terminated_asset',
+                'tenableio_vulnerability',
+                'tenableio_vulnerability_no_info',
+                'tenableio_vulnerability_self_scan']
 
             # Determine which feeds to process
             feeds_to_process = all_feeds if 'all' in data_types else [
@@ -153,7 +160,8 @@ class TenableIntegration:
                     event_count = processor.process()
                     total_events += event_count
                     feed_results[feed_name] = event_count
-                    # Flush checkpoint after each feed to prevent duplicates on crash
+                    # Flush checkpoint after each feed to prevent duplicates on
+                    # crash
                     self.checkpoint.flush_all()
                 except Exception as e:
                     self.logger.error(
@@ -238,19 +246,33 @@ Examples:
         """
     )
 
-    parser.add_argument('--feed', nargs='+', default=['all'], dest='types',
-                        choices=['all', 'tenableio_asset', 'tenableio_asset_self_scan',
-                                 'tenableio_compliance', 'tenableio_deleted_asset',
-                                 'tenableio_fixed_vulnerability', 'tenableio_plugin',
-                                 'tenableio_terminated_asset', 'tenableio_vulnerability',
-                                 'tenableio_vulnerability_no_info', 'tenableio_vulnerability_self_scan'],
-                        help='Feed types to collect (default: all)')
+    parser.add_argument(
+        '--feed',
+        nargs='+',
+        default=['all'],
+        dest='types',
+        choices=[
+            'all',
+            'tenableio_asset',
+            'tenableio_asset_self_scan',
+            'tenableio_compliance',
+            'tenableio_deleted_asset',
+            'tenableio_fixed_vulnerability',
+            'tenableio_plugin',
+            'tenableio_terminated_asset',
+            'tenableio_vulnerability',
+            'tenableio_vulnerability_no_info',
+            'tenableio_vulnerability_self_scan'],
+        help='Feed types to collect (default: all)')
 
     parser.add_argument('--daemon', action='store_true',
                         help='Run in daemon mode (continuous collection)')
 
-    parser.add_argument('--interval', type=int, default=3600,
-                        help='Seconds between runs in daemon mode (default: 3600)')
+    parser.add_argument(
+        '--interval',
+        type=int,
+        default=3600,
+        help='Seconds between runs in daemon mode (default: 3600)')
 
     args = parser.parse_args()
     integration = TenableIntegration()

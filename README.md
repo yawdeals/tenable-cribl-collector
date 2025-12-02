@@ -51,6 +51,7 @@ MAX_EVENTS_PER_FEED=0             # 0=unlimited, or set limit (e.g., 50000)
 CHECKPOINT_MAX_IDS=100000         # Max IDs per checkpoint file
 CHECKPOINT_RETENTION_DAYS=30      # Days to keep checkpoint data
 LOCK_TIMEOUT=600                  # Stale lock timeout (seconds)
+DELETED_ASSET_SCAN_INTERVAL_HOURS=24  # How often to scan for deleted assets (default: 24)
 ```
 
 ### 3. Run the Collector
@@ -262,6 +263,26 @@ tail -f logs/cron.log
 ```
 
 ## Troubleshooting
+
+### Error 429 / "Duplicate export cannot run"
+
+This occurs when a previous export is still running on Tenable's side. Common scenarios:
+- You cancelled the script but Tenable's export job continues (can take 10-30 minutes)
+- Another instance/tool is running an export
+- Tenable API rate limits
+
+**Solution:**
+The script now automatically retries with exponential backoff:
+1. First retry: waits 5 minutes
+2. Second retry: waits 7.5 minutes  
+3. Third retry: waits 11.25 minutes
+
+If all retries fail, wait 30-60 minutes for the existing export to complete, then re-run.
+
+**Prevention:**
+- Don't run multiple instances simultaneously
+- Use the process lock (`LOCK_TIMEOUT` in `.env`)
+- For large environments, increase `DELETED_ASSET_SCAN_INTERVAL_HOURS` to reduce frequency
 
 ### "Another process is already running"
 

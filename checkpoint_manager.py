@@ -23,8 +23,14 @@ class FileCheckpoint:
 
         # In-memory cache for performance (reduces disk I/O)
         self._cache: Dict[str, Dict] = {}  # Cached checkpoint data
-        self._dirty_keys: Set[str] = set()  # Keys that need to be written to disk
-        self._pending_count: Dict[str, int] = {}  # Count of pending writes per key
+        # Keys that need to be written to disk
+        self._dirty_keys: Set[str] = set()
+        # Count of pending writes per key
+        self._pending_count: Dict[str, int] = {}
+
+        # Global timestamp counter to ensure monotonic timestamps across
+        # batches
+        self._last_timestamp: float = 0.0
 
         # Create checkpoint directory if it doesn't exist
         if not os.path.exists(self.checkpoint_dir):
@@ -186,11 +192,22 @@ class FileCheckpoint:
 
         self._load_checkpoint(key)
 
-        current_time = int(time.time())
+        current_time = time.time()
         id_tracking = self._cache[key].setdefault('id_tracking', {})
 
-        for item_id in item_ids:
-            id_tracking[str(item_id)] = current_time
+        # Ensure timestamps are monotonically increasing across all batches
+        # This prevents the same timestamp range from being reused in
+        # subsequent batches
+        if current_time <= self._last_timestamp:
+            current_time = self._last_timestamp + 0.000001
+
+        # Use incrementing microsecond timestamps to preserve order
+        # This ensures trimming keeps the most recently added IDs
+        for i, item_id in enumerate(item_ids):
+            # Add microseconds to ensure uniqueness and preserve order
+            timestamp = current_time + (i / 1000000.0)
+            id_tracking[str(item_id)] = timestamp
+            self._last_timestamp = timestamp  # Track globally across all batches
 
         self._dirty_keys.add(key)
         self._pending_count[key] = self._pending_count.get(
