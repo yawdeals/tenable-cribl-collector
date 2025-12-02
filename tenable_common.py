@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Tenable to Cribl HEC integration - Common utilities
+# Tenable to Cribl collector - Common utilities
 import os
 import sys
 import logging

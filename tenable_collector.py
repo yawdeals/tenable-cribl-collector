@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Main Tenable to Cribl HEC integration collector
+# Main Tenable to Cribl collector
 import os
 import argparse
 import logging
@@ -215,7 +215,7 @@ class TenableIntegration:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Tenable.io to Cribl HEC Integration',
+        description='Tenable to Cribl Collector',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Feed Types:

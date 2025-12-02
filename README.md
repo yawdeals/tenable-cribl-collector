@@ -1,4 +1,4 @@
-# Tenable to Cribl HEC Integration
+# Tenable to Cribl Collector
 
 Collects security data from Tenable.io and sends it to Cribl via HTTP Event Collector (HEC).
 
@@ -18,7 +18,7 @@ Collects security data from Tenable.io and sends it to Cribl via HTTP Event Coll
 ### 1. Create Virtual Environment (Required for restricted users)
 
 ```bash
-cd /path/to/tenable-hec-integration
+cd /path/to/tenable-cribl-collector
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -101,7 +101,7 @@ crontab -e
 
 Add:
 ```cron
-0 2 * * * cd /path/to/tenable-hec-integration && ./run_tenable.sh --feed all >> logs/cron.log 2>&1
+0 2 * * * cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed all >> logs/cron.log 2>&1
 ```
 
 **Why daily?**
@@ -113,12 +113,12 @@ Add:
 
 ```cron
 # Every 6 hours
-0 */6 * * * cd /path/to/tenable-hec-integration && ./run_tenable.sh --feed all >> logs/cron.log 2>&1
+0 */6 * * * cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed all >> logs/cron.log 2>&1
 
 # Staggered feeds (for very large environments)
-0 1 * * * cd /path/to/tenable-hec-integration && ./run_tenable.sh --feed tenableio_asset >> logs/cron.log 2>&1
-0 3 * * * cd /path/to/tenable-hec-integration && ./run_tenable.sh --feed tenableio_vulnerability >> logs/cron.log 2>&1
-0 5 * * 0 cd /path/to/tenable-hec-integration && ./run_tenable.sh --feed tenableio_plugin >> logs/cron.log 2>&1
+0 1 * * * cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed tenableio_asset >> logs/cron.log 2>&1
+0 3 * * * cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed tenableio_vulnerability >> logs/cron.log 2>&1
+0 5 * * 0 cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed tenableio_plugin >> logs/cron.log 2>&1
 ```
 
 ## Event Classification
@@ -172,7 +172,7 @@ index=tenable sourcetype="tenable:io:vulnerability:fixed" earliest=-24h
 ## File Structure
 
 ```
-tenable-hec-integration/
+tenable-cribl-collector/
 ├── run_tenable.sh          # Wrapper script (activates venv)
 ├── tenable_collector.py    # Main entry point
 ├── tenable_common.py       # HEC handler and logging setup
