@@ -1,28 +1,19 @@
 #!/usr/bin/env python3
-"""
-Process lock manager to prevent overlapping script runs
-"""
+# Process lock manager to prevent concurrent script runs
 import os
 import time
 import logging
 
 
 class ProcessLock:
-    """Manages process lock file to prevent concurrent executions"""
+    # Manages lock file to prevent overlapping executions
 
     def __init__(self, lock_file='tenable_collector.lock',
                  lock_dir='locks', timeout=600):
-        """
-        Initialize process lock
-
-        Args:
-            lock_file: Name of the lock file
-            lock_dir: Directory to store lock files
-            timeout: Max age of stale lock in seconds (default: 10 minutes)
-        """
+        # Initialize lock with file path and timeout
         self.lock_dir = lock_dir
         self.lock_file = os.path.join(lock_dir, lock_file)
-        self.timeout = timeout
+        self.timeout = timeout  # Stale lock timeout in seconds (default 10 min)
         self.logger = logging.getLogger(__name__)
 
         # Create lock directory if needed
@@ -30,19 +21,14 @@ class ProcessLock:
             os.makedirs(self.lock_dir)
 
     def acquire(self):
-        """
-        Acquire the process lock
-
-        Returns:
-            True if lock acquired, False if another process is running
-        """
+        # Attempt to acquire the process lock (returns True if successful)
         # Check if lock file exists
         if os.path.exists(self.lock_file):
-            # Check if lock is stale
+            # Check if lock is stale (older than timeout)
             lock_age = time.time() - os.path.getmtime(self.lock_file)
 
             if lock_age < self.timeout:
-                # Active lock exists
+                # Active lock exists - another process is running
                 with open(self.lock_file, 'r') as f:
                     lock_data = f.read().strip()
 
@@ -50,7 +36,7 @@ class ProcessLock:
                     lock_data, lock_age))
                 return False
             else:
-                # Stale lock - remove it
+                # Stale lock - previous process crashed or timed out
                 self.logger.warning(
                     "Removing stale lock file (Age: {0:.0f}s)".format(lock_age))
                 try:
@@ -60,7 +46,7 @@ class ProcessLock:
                         "Failed to remove stale lock: {0}".format(e))
                     return False
 
-        # Create lock file
+        # Create lock file with current process ID
         try:
             with open(self.lock_file, 'w') as f:
                 f.write(str(os.getpid()))
@@ -74,7 +60,6 @@ class ProcessLock:
             return False
 
     def release(self):
-        """Release the process lock"""
         try:
             if os.path.exists(self.lock_file):
                 os.remove(self.lock_file)
@@ -83,13 +68,11 @@ class ProcessLock:
             self.logger.error("Failed to release lock: {0}".format(e))
 
     def __enter__(self):
-        """Context manager entry"""
         if not self.acquire():
             raise RuntimeError(
                 "Unable to acquire process lock - another instance is running")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit"""
         self.release()
         return False

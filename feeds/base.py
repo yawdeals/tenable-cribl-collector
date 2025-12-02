@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
+# Base class for all Tenable feed processors
 import logging
 import time
 
 
 class BaseFeedProcessor(object):
+    # Base processor with checkpointing, batching, and deduplication
 
     def __init__(self, tenable_client, checkpoint_mgr, hec_handler, feed_name,
                  checkpoint_key, sourcetype, feed_type, batch_size=5000, max_events=0):
-        self.tenable = tenable_client
-        self.checkpoint = checkpoint_mgr
-        self.hec = hec_handler
-        self.feed_name = feed_name
-        self.checkpoint_key = checkpoint_key
-        self.sourcetype = sourcetype
-        self.feed_type = feed_type  # Classification identifier
-        self.batch_size = batch_size
-        self.max_events = max_events  # 0 = unlimited
+        # Initialize processor with all required components
+        self.tenable = tenable_client  # Tenable API client
+        self.checkpoint = checkpoint_mgr  # Checkpoint manager for deduplication
+        self.hec = hec_handler  # HEC handler for sending events
+        self.feed_name = feed_name  # Human-readable feed name
+        self.checkpoint_key = checkpoint_key  # Unique key for this feed
+        self.sourcetype = sourcetype  # HEC sourcetype
+        self.feed_type = feed_type  # Feed classification (asset, vulnerability, etc.)
+        self.batch_size = batch_size  # Events per batch (default 5000)
+        self.max_events = max_events  # Max events to process (0 = unlimited)
         self.logger = logging.getLogger(__name__)
-        self._event_buffer = []
-        self._buffer_ids = []
-        self._start_time = None
+        self._event_buffer = []  # Buffer for batching events
+        self._buffer_ids = []  # IDs of buffered events for checkpointing
+        self._start_time = None  # Track processing time
 
     def log_start(self):
         self._start_time = time.time()
@@ -37,7 +40,6 @@ class BaseFeedProcessor(object):
                 self.feed_name, count, rate, elapsed / 60))
 
     def should_stop(self, count):
-        """Check if we've hit the max_events limit"""
         if self.max_events > 0 and count >= self.max_events:
             self.logger.info("Reached max_events limit ({0}), stopping {1} feed".format(
                 self.max_events, self.feed_name))
@@ -51,27 +53,15 @@ class BaseFeedProcessor(object):
             self.feed_name, count, elapsed / 60, rate))
 
     def send_event(self, event_data, item_id=None):
-        """
-        Buffer event for batch sending with feed classification
-
-        Args:
-            event_data: Event data dictionary
-            item_id: Optional item ID for checkpoint tracking
-
-        Returns:
-            True if buffered successfully
-        """
+        # Buffer event for batch sending (auto-flushes when batch size reached)
         try:
-            # Add feed classification to each event
+            # Copy event data (feed_type/feed_name added as HEC fields during flush)
             classified_event = dict(event_data)
-            classified_event['_tenable_feed'] = {
-                'feed_type': self.feed_type,
-                'feed_name': self.feed_name
-            }
 
+            # Add to buffer
             self._event_buffer.append(classified_event)
             if item_id:
-                self._buffer_ids.append(item_id)
+                self._buffer_ids.append(item_id)  # Track ID for checkpointing
 
             # Auto-flush when batch size reached
             if len(self._event_buffer) >= self.batch_size:
@@ -85,12 +75,7 @@ class BaseFeedProcessor(object):
             return False
 
     def flush_events(self):
-        """
-        Flush buffered events to HEC
-
-        Returns:
-            True if successful
-        """
+        # Send all buffered events to HEC and update checkpoints
         if not self._event_buffer:
             return True
 
@@ -99,14 +84,20 @@ class BaseFeedProcessor(object):
             self.logger.info("Sending batch of {0} {1} events to HEC...".format(
                 batch_size, self.feed_name))
 
+            # Send batch with feed classification
             success_count = self.hec.send_batch(
-                self._event_buffer, sourcetype=self.sourcetype)
+                self._event_buffer, 
+                sourcetype=self.sourcetype,
+                feed_type=self.feed_type,
+                feed_name=self.feed_name
+            )
 
             if success_count == batch_size:
-                # Mark all buffered IDs as processed on successful send
+                # Mark all buffered IDs as processed to prevent duplicates
                 for item_id in self._buffer_ids:
                     self.mark_processed(item_id)
 
+                # Clear buffers
                 self._event_buffer = []
                 self._buffer_ids = []
                 return True
@@ -121,18 +112,23 @@ class BaseFeedProcessor(object):
             return False
 
     def is_processed(self, item_id):
+        # Check if item has already been processed (deduplication)
         return self.checkpoint.is_processed(self.checkpoint_key, item_id)
 
     def mark_processed(self, item_id):
+        # Mark item as processed to prevent future duplicates
         self.checkpoint.add_processed_id(self.checkpoint_key, item_id)
 
     def get_last_timestamp(self):
+        # Get last processed timestamp for incremental processing
         return self.checkpoint.get_last_timestamp(self.checkpoint_key)
 
     def set_last_timestamp(self, timestamp):
+        # Update last processed timestamp
         self.checkpoint.set_last_timestamp(self.checkpoint_key, timestamp)
 
     def get_processed_ids(self):
+        # Get all processed IDs (used for detecting deletions)
         return self.checkpoint.get_processed_ids(self.checkpoint_key)
 
     def process(self):

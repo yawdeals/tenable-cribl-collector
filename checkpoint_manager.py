@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""
-File-Based Checkpoint Manager (Optimized for High Volume)
-Manages checkpointing using JSON files to track processed items
-Uses in-memory caching with periodic flushing for performance
-"""
-
+# File-based checkpoint manager for deduplication and state tracking
 import os
 import json
 import logging
@@ -15,30 +10,21 @@ from typing import Optional, Set, Dict
 
 
 class FileCheckpoint:
-    """Manages checkpointing with in-memory caching and batch writes"""
+    # Manages checkpoints with in-memory caching and periodic disk writes
 
     def __init__(self, checkpoint_dir="checkpoints", key_prefix="tenable",
                  max_ids=100000, retention_days=30, flush_interval=100):
-        """
-        Initialize file-based checkpoint manager
-
-        Args:
-            checkpoint_dir: Directory to store checkpoint files
-            key_prefix: Prefix for checkpoint filenames
-            max_ids: Maximum number of IDs to store per checkpoint (default: 100,000)
-            retention_days: Days to retain IDs before auto-cleanup (default: 30)
-            flush_interval: Number of IDs to accumulate before auto-flush (default: 100)
-        """
+        # Initialize checkpoint manager with configuration
         self.checkpoint_dir = checkpoint_dir
         self.key_prefix = key_prefix
-        self.max_ids = max_ids
-        self.retention_seconds = retention_days * 86400
-        self.flush_interval = flush_interval
+        self.max_ids = max_ids  # Max IDs to track per feed
+        self.retention_seconds = retention_days * 86400  # Convert days to seconds
+        self.flush_interval = flush_interval  # Auto-flush after N IDs
 
-        # In-memory cache for performance
-        self._cache: Dict[str, Dict] = {}
-        self._dirty_keys: Set[str] = set()
-        self._pending_count: Dict[str, int] = {}
+        # In-memory cache for performance (reduces disk I/O)
+        self._cache: Dict[str, Dict] = {}  # Cached checkpoint data
+        self._dirty_keys: Set[str] = set()  # Keys that need to be written to disk
+        self._pending_count: Dict[str, int] = {}  # Count of pending writes per key
 
         # Create checkpoint directory if it doesn't exist
         if not os.path.exists(self.checkpoint_dir):
@@ -48,26 +34,21 @@ class FileCheckpoint:
                     self.checkpoint_dir))
 
     def _get_checkpoint_file(self, key):
-        """Get the full path to a checkpoint file"""
         filename = "{}_{}.json".format(self.key_prefix, key)
         return os.path.join(self.checkpoint_dir, filename)
 
     def _load_checkpoint(self, key):
-        """
-        Load checkpoint into memory cache (lazy loading)
-
-        Args:
-            key: Checkpoint key identifier
-        """
+        # Load checkpoint from disk into memory cache (lazy loading)
         if key in self._cache:
-            return
+            return  # Already loaded
 
         filepath = self._get_checkpoint_file(key)
+        # Default empty checkpoint structure
         data = {
-            'id_tracking': {},
-            'last_timestamp': None,
-            'last_cleanup': None,
-            'total_tracked': 0
+            'id_tracking': {},  # ID -> timestamp mapping
+            'last_timestamp': None,  # Last processed timestamp
+            'last_cleanup': None,  # Last cleanup time
+            'total_tracked': 0  # Total IDs tracked
         }
 
         try:
@@ -76,7 +57,7 @@ class FileCheckpoint:
                     loaded_data = json.load(f)
                     data.update(loaded_data)
 
-                    # Migrate old format if needed
+                    # Migrate old format if needed (backward compatibility)
                     if 'processed_ids' in loaded_data and 'id_tracking' not in loaded_data:
                         current_time = int(time.time())
                         data['id_tracking'] = {
@@ -88,17 +69,11 @@ class FileCheckpoint:
                 "Error loading checkpoint {}: {}".format(
                     filepath, e))
 
+        # Store in cache
         self._cache[key] = data
         self._pending_count[key] = 0
 
     def _atomic_write(self, filepath, data):
-        """
-        Atomically write data to file (prevents corruption on crash)
-
-        Args:
-            filepath: Path to write to
-            data: Data dictionary to write
-        """
         # Write to temp file first
         dir_name = os.path.dirname(filepath)
         fd, temp_path = tempfile.mkstemp(dir=dir_name, suffix='.tmp')
@@ -116,12 +91,7 @@ class FileCheckpoint:
             raise e
 
     def flush(self, key=None):
-        """
-        Flush cached checkpoint data to disk
-
-        Args:
-            key: Specific key to flush, or None for all dirty keys
-        """
+        # Write cached checkpoint data to disk
         keys_to_flush = [key] if key else list(self._dirty_keys)
 
         for k in keys_to_flush:
@@ -137,13 +107,13 @@ class FileCheckpoint:
                 cutoff_time = current_time - self.retention_seconds
                 id_tracking = data.get('id_tracking', {})
 
-                # Remove expired IDs
+                # Remove expired IDs (older than retention period)
                 id_tracking = {
                     id_key: ts for id_key, ts in id_tracking.items()
                     if ts > cutoff_time
                 }
 
-                # Enforce max size (keep most recent)
+                # Enforce max size limit (keep most recent IDs)
                 if len(id_tracking) > self.max_ids:
                     sorted_ids = sorted(
                         id_tracking.items(), key=lambda x: x[1], reverse=True)
@@ -152,12 +122,13 @@ class FileCheckpoint:
                         "Checkpoint {} trimmed to {} IDs".format(
                             k, self.max_ids))
 
-                # Update cache and write
+                # Update cache and prepare for write
                 data['id_tracking'] = id_tracking
                 data['processed_ids'] = list(id_tracking.keys())
                 data['last_cleanup'] = current_time
                 data['total_tracked'] = len(id_tracking)
 
+                # Write to disk atomically (prevents corruption)
                 self._atomic_write(filepath, data)
                 self._dirty_keys.discard(k)
                 self._pending_count[k] = 0
@@ -169,30 +140,13 @@ class FileCheckpoint:
                 logging.error("Error flushing checkpoint {}: {}".format(k, e))
 
     def flush_all(self):
-        """Flush all dirty checkpoints to disk"""
         self.flush()
 
     def get_last_timestamp(self, key):
-        """
-        Get the last processed timestamp for a given key
-
-        Args:
-            key: Checkpoint key identifier
-
-        Returns:
-            Last timestamp or None if not found
-        """
         self._load_checkpoint(key)
         return self._cache[key].get('last_timestamp')
 
     def set_last_timestamp(self, key, timestamp):
-        """
-        Set the last processed timestamp for a given key
-
-        Args:
-            key: Checkpoint key identifier
-            timestamp: Timestamp value to store
-        """
         self._load_checkpoint(key)
         self._cache[key]['last_timestamp'] = timestamp
         self._dirty_keys.add(key)
@@ -200,15 +154,6 @@ class FileCheckpoint:
         self.flush(key)
 
     def get_processed_ids(self, key):
-        """
-        Get the set of processed IDs for a given key (from cache)
-
-        Args:
-            key: Checkpoint key identifier
-
-        Returns:
-            Set of processed IDs
-        """
         self._load_checkpoint(key)
 
         current_time = int(time.time())
@@ -222,13 +167,6 @@ class FileCheckpoint:
         }
 
     def add_processed_id(self, key, item_id):
-        """
-        Add an ID to the set of processed items (cached, batched writes)
-
-        Args:
-            key: Checkpoint key identifier
-            item_id: ID to mark as processed
-        """
         self._load_checkpoint(key)
 
         # Add to in-memory cache
@@ -243,13 +181,6 @@ class FileCheckpoint:
             self.flush(key)
 
     def add_processed_ids_batch(self, key, item_ids):
-        """
-        Add multiple IDs at once (more efficient than individual adds)
-
-        Args:
-            key: Checkpoint key identifier
-            item_ids: List of item IDs to mark as processed
-        """
         if not item_ids:
             return
 
@@ -269,16 +200,6 @@ class FileCheckpoint:
         self.flush(key)
 
     def is_processed(self, key, item_id):
-        """
-        Check if an ID has been processed (O(1) lookup from cache)
-
-        Args:
-            key: Checkpoint key identifier
-            item_id: ID to check
-
-        Returns:
-            True if already processed, False otherwise
-        """
         self._load_checkpoint(key)
 
         id_tracking = self._cache[key].get('id_tracking', {})
@@ -293,12 +214,6 @@ class FileCheckpoint:
         return id_tracking[str_id] > cutoff_time
 
     def clear_checkpoint(self, key):
-        """
-        Clear all checkpoint data for a given key
-
-        Args:
-            key: Checkpoint key identifier
-        """
         filepath = self._get_checkpoint_file(key)
 
         try:
@@ -311,12 +226,6 @@ class FileCheckpoint:
                     filepath, e))
 
     def get_all_checkpoints(self):
-        """
-        Get a list of all checkpoint keys
-
-        Returns:
-            List of checkpoint key names
-        """
         checkpoints = []
 
         try:
@@ -336,15 +245,6 @@ class FileCheckpoint:
         return checkpoints
 
     def get_checkpoint_stats(self, key):
-        """
-        Get statistics about a checkpoint file
-
-        Args:
-            key: Checkpoint key identifier
-
-        Returns:
-            Dictionary with checkpoint stats
-        """
         self._load_checkpoint(key)
         filepath = self._get_checkpoint_file(key)
 
@@ -377,9 +277,6 @@ class FileCheckpoint:
         return stats
 
     def cleanup_all_checkpoints(self):
-        """
-        Force cleanup of all checkpoint files (remove expired IDs)
-        """
         for key in self.get_all_checkpoints():
             try:
                 self._load_checkpoint(key)
@@ -395,7 +292,6 @@ class FileCheckpoint:
                         key, e))
 
     def __del__(self):
-        """Flush all dirty checkpoints on destruction"""
         try:
             self.flush_all()
         except Exception:

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Main Tenable to Cribl HEC integration collector
 import os
 import argparse
 import logging
@@ -17,14 +18,18 @@ from feeds.plugins import (PluginFeedProcessor, ComplianceFeedProcessor)
 
 
 class TenableIntegration:
+    # Main integration orchestrator for all Tenable feeds
 
     def __init__(self):
+        # Load environment variables from .env file
         load_dotenv()
 
+        # Set up logging
         log_level = os.getenv('LOG_LEVEL', 'INFO')
         setup_logging(log_level, 'tenable_integration.log')
         self.logger = logging.getLogger(__name__)
 
+        # Initialize Tenable.io API client
         self.tenable = TenableIO(
             access_key=os.getenv('TENABLE_ACCESS_KEY'),
             secret_key=os.getenv('TENABLE_SECRET_KEY'),
@@ -32,6 +37,7 @@ class TenableIntegration:
         )
         self.logger.info("Initialized Tenable.io client")
 
+        # Initialize Cribl HEC handler
         self.cribl = CriblHECHandler(
             host=os.getenv('CRIBL_HEC_HOST'),
             port=int(os.getenv('CRIBL_HEC_PORT', 8088)),
@@ -42,6 +48,7 @@ class TenableIntegration:
                 'true').lower() == 'true'
         )
 
+        # Initialize checkpoint manager for deduplication
         self.checkpoint = FileCheckpoint(
             checkpoint_dir=os.getenv('CHECKPOINT_DIR', 'checkpoints'),
             key_prefix='tenable',
@@ -50,11 +57,13 @@ class TenableIntegration:
         )
         self.logger.info("Initialized file-based checkpointing")
 
+        # Configure batch size for HEC sends
         self.batch_size = int(os.getenv('HEC_BATCH_SIZE', 5000))
         self.logger.info(
             "Batch size configured: {0} events".format(
                 self.batch_size))
 
+        # Configure max events per feed (0 = unlimited)
         self.max_events = int(os.getenv('MAX_EVENTS_PER_FEED', 0))
         if self.max_events > 0:
             self.logger.info(
@@ -63,6 +72,7 @@ class TenableIntegration:
         else:
             self.logger.info("Max events per feed: unlimited")
 
+        # Cache for feed processors (lazy initialization)
         self._feed_processors = {}
 
     def _get_processor(self, feed_name):
@@ -96,6 +106,7 @@ class TenableIntegration:
         return processor
 
     def run_once(self, data_types):
+        # Run collection once for specified feed types
         # Acquire process lock to prevent overlapping runs
         lock = ProcessLock(
             lock_file='tenable_collector.lock',
@@ -120,6 +131,7 @@ class TenableIntegration:
                     time.strftime('%Y-%m-%d %H:%M:%S')))
             self.logger.info("=" * 80)
 
+            # All available feed types
             all_feeds = [
                 'tenableio_asset', 'tenableio_asset_self_scan', 'tenableio_compliance',
                 'tenableio_deleted_asset', 'tenableio_fixed_vulnerability', 'tenableio_plugin',
@@ -127,17 +139,22 @@ class TenableIntegration:
                 'tenableio_vulnerability_no_info', 'tenableio_vulnerability_self_scan'
             ]
 
+            # Determine which feeds to process
             feeds_to_process = all_feeds if 'all' in data_types else [
                 f for f in data_types if f in all_feeds]
             total_events = 0
             feed_results = {}
 
+            # Process each feed sequentially
             for feed_name in feeds_to_process:
                 try:
+                    # Get or create processor for this feed
                     processor = self._get_processor(feed_name)
                     event_count = processor.process()
                     total_events += event_count
                     feed_results[feed_name] = event_count
+                    # Flush checkpoint after each feed to prevent duplicates on crash
+                    self.checkpoint.flush_all()
                 except Exception as e:
                     self.logger.error(
                         "Failed to process feed {0}: {1}".format(
@@ -157,12 +174,22 @@ class TenableIntegration:
             self.logger.info(
                 "Total events sent to Cribl: {0}".format(total_events))
             self.logger.info("=" * 80)
+
+            # CRITICAL: Flush all checkpoints to disk to prevent duplicates
+            self.logger.info("Flushing checkpoints to disk...")
+            self.checkpoint.flush_all()
+            self.logger.info("Checkpoints saved successfully")
         except Exception as e:
             self.logger.error(
                 "ERROR during integration run: {0}".format(
                     str(e)), exc_info=True)
             raise
         finally:
+            # Always try to flush checkpoints, even on error
+            try:
+                self.checkpoint.flush_all()
+            except Exception:
+                pass
             lock.release()
 
     def run_daemon(self, data_types, interval=3600):
