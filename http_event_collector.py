@@ -108,13 +108,14 @@ class http_event_collector:
             'Content-Type': 'application/json'
         }
         
-        # Send to Splunk
+        # Send to Splunk (bypass proxy)
         try:
             response = requests.post(
                 self.server_uri,
                 data=payload,
                 headers=headers,
-                verify=False  # Consider making this configurable
+                verify=False,
+                proxies={'http': None, 'https': None}
             )
             
             # Check response

@@ -1,32 +1,30 @@
-#!/usr/bin/env python
-"""
-Comprehensive Tenable to Cribl Integration
-Handles all Tenable data types in one production-ready script
-Python 3.6.8+ compatible - No Redis dependency
-"""
-
+#!/usr/bin/env python3
 import os
 import argparse
 import logging
+import time
+import sys
 from dotenv import load_dotenv
 from tenable.io import TenableIO
 from checkpoint_manager import FileCheckpoint
+from process_lock import ProcessLock
 from tenable_common import CriblHECHandler, setup_logging
+from feeds.assets import (AssetFeedProcessor, AssetSelfScanProcessor, 
+                          DeletedAssetProcessor, TerminatedAssetProcessor)
+from feeds.vulnerabilities import (VulnerabilityFeedProcessor, VulnerabilityNoInfoProcessor,
+                                   VulnerabilitySelfScanProcessor, FixedVulnerabilityProcessor)
+from feeds.plugins import (PluginFeedProcessor, ComplianceFeedProcessor)
 
 
 class TenableIntegration:
-    """Main integration class for all Tenable data types"""
     
     def __init__(self):
-        """Initialize the integration with configuration from environment"""
         load_dotenv()
         
-        # Setup logging
         log_level = os.getenv('LOG_LEVEL', 'INFO')
         setup_logging(log_level, 'tenable_integration.log')
         self.logger = logging.getLogger(__name__)
         
-        # Initialize Tenable client
         self.tenable = TenableIO(
             access_key=os.getenv('TENABLE_ACCESS_KEY'),
             secret_key=os.getenv('TENABLE_SECRET_KEY'),
@@ -34,281 +32,172 @@ class TenableIntegration:
         )
         self.logger.info("Initialized Tenable.io client")
         
-        # Initialize Cribl HEC handler
         self.cribl = CriblHECHandler(
             host=os.getenv('CRIBL_HEC_HOST'),
             port=int(os.getenv('CRIBL_HEC_PORT', 8088)),
             token=os.getenv('CRIBL_HEC_TOKEN'),
-            index='',
-            sourcetype='',
-            source='',
+            index='', sourcetype='', source='',
             ssl_verify=os.getenv('CRIBL_HEC_SSL_VERIFY', 'true').lower() == 'true'
         )
         
-        # Initialize file-based checkpoint
         self.checkpoint = FileCheckpoint(
             checkpoint_dir=os.getenv('CHECKPOINT_DIR', 'checkpoints'),
-            key_prefix='tenable'
+            key_prefix='tenable',
+            max_ids=int(os.getenv('CHECKPOINT_MAX_IDS', 100000)),
+            retention_days=int(os.getenv('CHECKPOINT_RETENTION_DAYS', 30))
         )
         self.logger.info("Initialized file-based checkpointing")
+        
+        self.batch_size = int(os.getenv('HEC_BATCH_SIZE', 5000))
+        self.logger.info("Batch size configured: {0} events".format(self.batch_size))
+        
+        self._feed_processors = {}
     
-    def process_assets(self):
-        """Process asset inventory data"""
-        self.logger.info("Starting asset collection")
-        checkpoint_key = "assets"
+    def _get_processor(self, feed_name):
+        if feed_name in self._feed_processors:
+            return self._feed_processors[feed_name]
         
-        try:
-            assets = list(self.tenable.assets.list())
-            self.logger.info("Retrieved {} assets from Tenable".format(len(assets)))
-            
-            events_sent = 0
-            for asset in assets:
-                asset_id = asset.get('id')
-                
-                # Skip if already processed
-                if self.checkpoint.is_processed(checkpoint_key, asset_id):
-                    continue
-                
-                # Send to Cribl with sourcetype
-                event_data = dict(asset)
-                event_data['event_type'] = 'tenable_asset'
-                
-                if self.cribl.send_event(event_data, sourcetype='tenable:asset'):
-                    events_sent += 1
-                    self.checkpoint.add_processed_id(checkpoint_key, asset_id)
-            
-            self.logger.info("Sent {} asset events to Cribl".format(events_sent))
-            return events_sent
-            
-        except Exception as e:
-            self.logger.error("Error processing assets: {}".format(e))
-            return 0
-    
-    def process_vulnerabilities(self, severity=None):
-        """Process vulnerability data"""
-        self.logger.info("Starting vulnerability collection")
-        checkpoint_key = "vulnerabilities"
+        processor_map = {
+            'tenableio_asset': AssetFeedProcessor,
+            'tenableio_asset_self_scan': AssetSelfScanProcessor,
+            'tenableio_deleted_asset': DeletedAssetProcessor,
+            'tenableio_terminated_asset': TerminatedAssetProcessor,
+            'tenableio_vulnerability': VulnerabilityFeedProcessor,
+            'tenableio_vulnerability_no_info': VulnerabilityNoInfoProcessor,
+            'tenableio_vulnerability_self_scan': VulnerabilitySelfScanProcessor,
+            'tenableio_fixed_vulnerability': FixedVulnerabilityProcessor,
+            'tenableio_plugin': PluginFeedProcessor,
+            'tenableio_compliance': ComplianceFeedProcessor
+        }
         
-        try:
-            # Get all scans first
-            scans = list(self.tenable.scans.list())
-            self.logger.info("Retrieved {} scans".format(len(scans)))
-            
-            events_sent = 0
-            for scan in scans:
-                scan_id = scan.get('id')
-                
-                try:
-                    # Get scan details
-                    scan_details = self.tenable.scans.details(scan_id)
-                    hosts = scan_details.get('hosts', [])
-                    
-                    for host in hosts:
-                        host_id = host.get('host_id')
-                        
-                        # Get vulnerabilities for this host
-                        host_details = self.tenable.scans.host_details(scan_id, host_id)
-                        vulns = host_details.get('vulnerabilities', [])
-                        
-                        for vuln in vulns:
-                            # Filter by severity if specified
-                            vuln_severity = vuln.get('severity', 0)
-                            if severity is not None and vuln_severity != severity:
-                                continue
-                            
-                            # Create unique ID
-                            vuln_id = "{}_{}_{}_{}".format(
-                                scan_id, host_id, 
-                                vuln.get('plugin_id'), 
-                                vuln.get('plugin_name', '').replace(' ', '_')
-                            )
-                            
-                            # Skip if already processed
-                            if self.checkpoint.is_processed(checkpoint_key, vuln_id):
-                                continue
-                            
-                            # Prepare event data
-                            event_data = {
-                                'event_type': 'tenable_vulnerability',
-                                'scan_id': scan_id,
-                                'scan_name': scan.get('name'),
-                                'host_id': host_id,
-                                'hostname': host.get('hostname'),
-                                'vulnerability': vuln
-                            }
-                            
-                            if self.cribl.send_event(event_data, sourcetype='tenable:vulnerability'):
-                                events_sent += 1
-                                self.checkpoint.add_processed_id(checkpoint_key, vuln_id)
-                
-                except Exception as e:
-                    self.logger.error("Error processing scan {}: {}".format(scan_id, e))
-                    continue
-            
-            self.logger.info("Sent {} vulnerability events to Cribl".format(events_sent))
-            return events_sent
-            
-        except Exception as e:
-            self.logger.error("Error processing vulnerabilities: {}".format(e))
-            return 0
-    
-    def process_plugins(self):
-        """Process plugin information"""
-        self.logger.info("Starting plugin collection")
-        checkpoint_key = "plugins"
+        processor_class = processor_map.get(feed_name)
+        if not processor_class:
+            raise ValueError("Unknown feed type: {0}".format(feed_name))
         
-        try:
-            # Get plugin families
-            families_data = self.tenable.plugins.families()
-            families = families_data.get('families', [])
-            self.logger.info("Retrieved {} plugin families".format(len(families)))
-            
-            events_sent = 0
-            for family in families:
-                family_id = family.get('id')
-                
-                # Skip if already processed
-                if self.checkpoint.is_processed(checkpoint_key, family_id):
-                    continue
-                
-                event_data = dict(family)
-                event_data['event_type'] = 'tenable_plugin_family'
-                
-                if self.cribl.send_event(event_data, sourcetype='tenable:plugin'):
-                    events_sent += 1
-                    self.checkpoint.add_processed_id(checkpoint_key, family_id)
-            
-            self.logger.info("Sent {} plugin events to Cribl".format(events_sent))
-            return events_sent
-            
-        except Exception as e:
-            self.logger.error("Error processing plugins: {}".format(e))
-            return 0
-    
-    def process_scans(self):
-        """Process scan summary data"""
-        self.logger.info("Starting scan collection")
-        checkpoint_key = "scans"
-        last_timestamp = self.checkpoint.get_last_timestamp(checkpoint_key)
-        
-        self.logger.info("Processing scans (last checkpoint: {})".format(last_timestamp))
-        
-        try:
-            scans = []
-            for scan in self.tenable.scans.list():
-                scan_dict = dict(scan)
-                
-                # Filter by last modification date if checkpoint exists
-                if last_timestamp:
-                    if scan_dict.get('last_modification_date', 0) <= last_timestamp:
-                        continue
-                
-                scans.append(scan_dict)
-            
-            self.logger.info("Retrieved {} new scans from Tenable".format(len(scans)))
-            
-            if not scans:
-                self.logger.info("No new scans to process")
-                return 0
-            
-            max_timestamp = last_timestamp or 0
-            events_sent = 0
-            
-            for scan in scans:
-                scan_id = scan.get('id')
-                scan_uuid = scan.get('uuid', str(scan_id))
-                
-                # Check if already processed
-                if self.checkpoint.is_processed(checkpoint_key, scan_uuid):
-                    continue
-                
-                # Get scan details
-                try:
-                    scan_details = self.tenable.scans.details(scan_id)
-                    scan_details['event_type'] = 'tenable_scan'
-                    
-                    if self.cribl.send_event(scan_details, sourcetype='tenable:scan'):
-                        events_sent += 1
-                        self.logger.info("Sent scan {} to Cribl".format(scan_id))
-                
-                except Exception as e:
-                    self.logger.error("Error getting scan details for {}: {}".format(scan_id, e))
-                    continue
-                
-                # Mark as processed
-                self.checkpoint.add_processed_id(checkpoint_key, scan_uuid)
-                
-                # Update max timestamp
-                mod_date = scan.get('last_modification_date', 0)
-                if mod_date > max_timestamp:
-                    max_timestamp = mod_date
-            
-            # Update checkpoint timestamp
-            if max_timestamp > (last_timestamp or 0):
-                self.checkpoint.set_last_timestamp(checkpoint_key, max_timestamp)
-            
-            self.logger.info("Processed {} scans, sent {} events to Cribl".format(len(scans), events_sent))
-            return events_sent
-            
-        except Exception as e:
-            self.logger.error("Error processing scans: {}".format(e))
-            return 0
+        processor = processor_class(self.tenable, self.checkpoint, self.cribl, self.batch_size)
+        self._feed_processors[feed_name] = processor
+        return processor
     
     def run_once(self, data_types):
-        """
-        Run integration once for specified data types
+        # Acquire process lock to prevent overlapping runs
+        lock = ProcessLock(
+            lock_file='tenable_collector.lock',
+            lock_dir=os.getenv('LOCK_DIR', 'locks'),
+            timeout=int(os.getenv('LOCK_TIMEOUT', 600))
+        )
         
-        Args:
-            data_types: List of data types to collect
-        """
-        self.logger.info("Starting Tenable to Cribl integration (one-time run)")
-        self.logger.info("Data types: {}".format(', '.join(data_types)))
-        
-        total_events = 0
+        if not lock.acquire():
+            self.logger.error("Another instance is already running. Exiting.")
+            return
         
         try:
-            if 'assets' in data_types or 'all' in data_types:
-                total_events += self.process_assets()
+            self.logger.info("=" * 80)
+            self.logger.info("STARTING TENABLE TO CRIBL INTEGRATION")
+            self.logger.info("=" * 80)
+            self.logger.info("Selected feeds: {0}".format(', '.join(data_types)))
+            self.logger.info("Batch size: {0} events".format(self.batch_size))
+            self.logger.info("Timestamp: {0}".format(time.strftime('%Y-%m-%d %H:%M:%S')))
+            self.logger.info("=" * 80)
             
-            if 'vulnerabilities' in data_types or 'all' in data_types:
-                total_events += self.process_vulnerabilities()
+            all_feeds = [
+                'tenableio_asset', 'tenableio_asset_self_scan', 'tenableio_compliance',
+                'tenableio_deleted_asset', 'tenableio_fixed_vulnerability', 'tenableio_plugin',
+                'tenableio_terminated_asset', 'tenableio_vulnerability',
+                'tenableio_vulnerability_no_info', 'tenableio_vulnerability_self_scan'
+            ]
             
-            if 'vulnerabilities_no_info' in data_types:
-                # Vulnerabilities with severity 0 (informational)
-                total_events += self.process_vulnerabilities(severity=0)
+            feeds_to_process = all_feeds if 'all' in data_types else [f for f in data_types if f in all_feeds]
+            total_events = 0
+            feed_results = {}
             
-            if 'plugins' in data_types or 'all' in data_types:
-                total_events += self.process_plugins()
+            for feed_name in feeds_to_process:
+                try:
+                    processor = self._get_processor(feed_name)
+                    event_count = processor.process()
+                    total_events += event_count
+                    feed_results[feed_name] = event_count
+                except Exception as e:
+                    self.logger.error("Failed to process feed {0}: {1}".format(feed_name, str(e)), exc_info=True)
+                    feed_results[feed_name] = 0
             
-            if 'scans' in data_types or 'all' in data_types:
-                total_events += self.process_scans()
-            
-            self.logger.info("Integration completed - Total events sent: {}".format(total_events))
-            
+            self.logger.info("=" * 80)
+            self.logger.info("INTEGRATION COMPLETED SUCCESSFULLY")
+            self.logger.info("=" * 80)
+            self.logger.info("Feed Collection Summary:")
+            for feed_name in feeds_to_process:
+                event_count = feed_results.get(feed_name, 0)
+                self.logger.info("  {0}: {1} events".format(feed_name, event_count))
+            self.logger.info("-" * 80)
+            self.logger.info("Total events sent to Cribl: {0}".format(total_events))
+            self.logger.info("=" * 80)
         except Exception as e:
-            self.logger.error("Error during integration run: {}".format(e), exc_info=True)
+            self.logger.error("ERROR during integration run: {0}".format(str(e)), exc_info=True)
+            raise
+        finally:
+            lock.release()
+    
+    def run_daemon(self, data_types, interval=3600):
+        self.logger.info("Starting daemon mode (interval: {0}s)...".format(interval))
+        while True:
+            try:
+                self.run_once(data_types)
+                self.logger.info("Sleeping for {0} seconds...".format(interval))
+                time.sleep(interval)
+            except KeyboardInterrupt:
+                self.logger.info("Received shutdown signal, exiting...")
+                break
+            except Exception as e:
+                self.logger.error("Error in daemon loop: {0}".format(str(e)), exc_info=True)
+                self.logger.info("Waiting {0} seconds before retry...".format(interval))
+                time.sleep(interval)
 
 
 def main():
-    """Main entry point"""
-    parser = argparse.ArgumentParser(description='Tenable to Cribl HEC Integration')
-    parser.add_argument('--once', action='store_true', 
-                       help='Run once and exit')
-    parser.add_argument('--types', nargs='+', 
-                       default=['all'],
-                       choices=['all', 'assets', 'vulnerabilities', 'vulnerabilities_no_info', 
-                               'plugins', 'scans'],
-                       help='Data types to collect (default: all)')
+    parser = argparse.ArgumentParser(
+        description='Tenable.io to Cribl HEC Integration',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Feed Types:
+  tenableio_asset                   Asset inventory
+  tenableio_asset_self_scan         Agent-based assets
+  tenableio_compliance              Compliance findings
+  tenableio_deleted_asset           Deleted assets
+  tenableio_fixed_vulnerability     Fixed vulnerabilities
+  tenableio_plugin                  Plugin metadata
+  tenableio_terminated_asset        Terminated assets
+  tenableio_vulnerability           Active vulnerabilities
+  tenableio_vulnerability_no_info   Info-level vulnerabilities
+  tenableio_vulnerability_self_scan Agent-based vulnerabilities
+  all                               All feeds
+
+Examples:
+  python tenable_collector.py --feed all
+  python tenable_collector.py --feed tenableio_asset tenableio_vulnerability
+  python tenable_collector.py --feed all --daemon --interval 3600
+        """
+    )
+    
+    parser.add_argument('--feed', nargs='+', default=['all'], dest='types',
+                       choices=['all', 'tenableio_asset', 'tenableio_asset_self_scan',
+                               'tenableio_compliance', 'tenableio_deleted_asset',
+                               'tenableio_fixed_vulnerability', 'tenableio_plugin',
+                               'tenableio_terminated_asset', 'tenableio_vulnerability',
+                               'tenableio_vulnerability_no_info', 'tenableio_vulnerability_self_scan'],
+                       help='Feed types to collect (default: all)')
+    
+    parser.add_argument('--daemon', action='store_true',
+                       help='Run in daemon mode (continuous collection)')
+    
+    parser.add_argument('--interval', type=int, default=3600,
+                       help='Seconds between runs in daemon mode (default: 3600)')
     
     args = parser.parse_args()
-    
     integration = TenableIntegration()
     
-    if args.once:
-        integration.run_once(args.types)
+    if args.daemon:
+        integration.run_daemon(args.types, args.interval)
     else:
-        print("Continuous mode not implemented. Use --once flag.")
-        print("For scheduled runs, use cron or system scheduler.")
+        integration.run_once(args.types)
 
 
 if __name__ == '__main__':

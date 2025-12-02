@@ -1,390 +1,160 @@
 # Tenable to Cribl HEC Integration
 
-Production-ready Python script that collects data from Tenable.io and sends it to Cribl via HTTP Event Collector (HEC). Features file-based checkpointing with no external dependencies required.
+Collects security data from Tenable.io and sends it to Cribl via HTTP Event Collector (HEC).
 
 ## Features
 
-- **Unified Collection Script**: Single `tenable_collector.py` handles all Tenable data types
-- **No Redis Required**: File-based JSON checkpointing - works in restricted environments
-- **Python 3.6.8+ Compatible**: Works on older production systems
-- **Multiple Data Types**: Collect assets, vulnerabilities, plugins, and scans
-- **Flexible Execution**: Run once or continuously with configurable intervals
-- **Production Hardened**: Clean logging, error handling, and checkpoint management
-
-## Prerequisites
-
-- Python 3.6.8 or higher
-- Tenable.io account with API access keys
-- Cribl instance with HTTP Event Collector enabled
-- **No root/sudo access required**
-- **No Redis or external database needed**
+- **10 Feed Types**: Assets, Vulnerabilities, Plugins, Compliance, and more
+- **High Volume**: Batch processing (10,000 events per batch)
+- **Checkpointing**: Tracks processed IDs to avoid duplicates
+- **Overlap Prevention**: Process lock prevents concurrent runs
+- **Disk Protection**: Auto-cleanup of old checkpoint data
 
 ## Quick Start
 
-1. **Install dependencies** (user-level, no root needed):
-   ```bash
-   pip install --user -r requirements.txt
-   ```
-
-2. **Configure environment**:
-   ```bash
-   cp .env.example .env
-   # Edit .env and add your credentials
-   ```
-
-3. **Run data collection**:
-   ```bash
-   # Collect all data types once
-   ./run_collector.sh --types all
-
-   # Collect specific data types
-   ./run_collector.sh --types assets,vulnerabilities
-
-   # Run continuously (default 1 hour interval)
-   python tenable_collector.py --types all
-   ```
-
-## Installation
-
-### Step 1: Install Python Dependencies
-
-No root access required - install to user directory:
+### 1. Install Dependencies
 
 ```bash
-pip install --user -r requirements.txt
+pip install -r requirements.txt
 ```
 
-Dependencies:
-- `pytenable==1.3.4` - Tenable.io API client (Python 3.6.8 compatible)
-- `python-dotenv==0.19.2` - Environment variable management
-- `requests==2.27.1` - HTTP library
+### 2. Configure Environment
 
-### Step 2: Configure Environment Variables
+Copy the example and edit with your values:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your credentials:
+Edit `.env`:
 
 ```bash
-# Tenable API Configuration
+# Tenable.io API (Required)
 TENABLE_ACCESS_KEY=your_access_key_here
 TENABLE_SECRET_KEY=your_secret_key_here
-TENABLE_URL=https://cloud.tenable.com
 
-# Cribl HEC Configuration
+# Cribl HEC (Required)
 CRIBL_HEC_HOST=192.168.14.45
 CRIBL_HEC_PORT=8088
 CRIBL_HEC_TOKEN=your_hec_token_here
-CRIBL_HEC_SSL_VERIFY=false
 
-# Checkpoint Configuration
-CHECKPOINT_DIR=checkpoints
-
-# Script Configuration
-LOG_LEVEL=INFO
-SCAN_INTERVAL=3600
+# Optional Settings
+HEC_BATCH_SIZE=10000           # Events per HEC batch
+CHECKPOINT_MAX_IDS=100000      # Max IDs per checkpoint file
+CHECKPOINT_RETENTION_DAYS=30   # Days to keep checkpoint data
+LOCK_TIMEOUT=600               # Stale lock timeout (seconds)
 ```
 
-**Get Tenable API Keys**:
-1. Log in to Tenable.io
-2. Go to Settings → My Account → API Keys
-3. Generate new access and secret keys
+### 3. Run the Collector
 
-**Get Cribl HEC Token**:
-1. Configure HTTP Event Collector source in Cribl
-2. Generate HEC token
-3. Note the endpoint host and port
-
-## Usage
-
-### Run Once (Recommended for Cron Jobs)
-
-Collect all data types:
 ```bash
-./run_collector.sh --types all
-```
-
-Collect specific data types:
-```bash
-./run_collector.sh --types assets,vulnerabilities,plugins
-```
-
-Direct Python execution:
-```bash
-python tenable_collector.py --once --types all
-```
-
-### Run Continuously
-
-Default interval (1 hour):
-```bash
-python tenable_collector.py --types all
-```
-
-Custom interval (30 minutes):
-```bash
-python tenable_collector.py --types all --interval 1800
-```
-
-### Available Data Types
-
-| Type | Description |
-|------|-------------|
-| `assets` | Asset inventory from Tenable |
-| `vulnerabilities` | High/Critical/Medium severity vulnerabilities |
-| `vulnerabilities_no_info` | Info severity vulnerabilities only |
-| `plugins` | Vulnerability plugin information |
-| `scans` | Scan summary data |
-| `all` | All of the above |
-
-**Examples**:
-```bash
-# Collect only assets and high-severity vulnerabilities
-python tenable_collector.py --once --types assets,vulnerabilities
-
-# Collect everything except info-level findings
-python tenable_collector.py --once --types assets,vulnerabilities,plugins,scans
-
-# Collect only scan summaries
-python tenable_collector.py --once --types scans
+python3 tenable_collector.py
 ```
 
 ## Scheduling with Cron
 
-Add to crontab (`crontab -e`):
+### Run Every 10 Minutes
 
 ```bash
-# Run all data types every hour
-0 * * * * cd /path/to/tenable-hec-integration && ./run_collector.sh --types all >> logs/cron.log 2>&1
-
-# Run assets and vulnerabilities every 4 hours
-0 */4 * * * cd /path/to/tenable-hec-integration && ./run_collector.sh --types assets,vulnerabilities >> logs/cron.log 2>&1
-
-# Run daily at 3 AM
-0 3 * * * cd /path/to/tenable-hec-integration && ./run_collector.sh --types all >> logs/cron.log 2>&1
+crontab -e
 ```
 
-**Important**: Always use absolute paths in cron and redirect output to logs.
+Add this line:
 
-## Checkpointing
-
-Checkpoints are stored as JSON files in the `checkpoints/` directory:
-
-```
-checkpoints/
-├── tenable_assets.json
-├── tenable_vulnerabilities.json
-├── tenable_plugins.json
-└── tenable_scans.json
+```cron
+*/10 * * * * cd /path/to/tenable-hec-integration && /usr/bin/python3 tenable_collector.py >> logs/collector.log 2>&1
 ```
 
-Each checkpoint file tracks:
-- **last_timestamp**: Last processed modification time
-- **processed_ids**: Set of already-processed item IDs
+### Run Every Hour
 
-### Reset Checkpoints
-
-To reprocess all data:
-```bash
-rm -rf checkpoints/
+```cron
+0 * * * * cd /path/to/tenable-hec-integration && /usr/bin/python3 tenable_collector.py >> logs/collector.log 2>&1
 ```
 
-To reset specific data type:
-```bash
-rm checkpoints/tenable_assets.json
-```
+### Run Daily at 2 AM
 
-## Logging
-
-Logs are written to `logs/` directory:
-- **tenable_integration.log**: Main application log
-- **cron.log**: Cron execution log (if using cron)
-
-Log level configured via `LOG_LEVEL` in `.env`:
-- `DEBUG`: Verbose debugging information
-- `INFO`: General informational messages (default)
-- `WARNING`: Warning messages
-- `ERROR`: Error messages
-- `CRITICAL`: Critical errors
-
-View recent logs:
-```bash
-tail -f logs/tenable_integration.log
-```
-
-## Troubleshooting
-
-### Test Tenable Connection
-
-```bash
-python test_tenable_access.py
-```
-
-### Test Cribl HEC Endpoint
-
-```bash
-curl -k http://192.168.14.45:8088/services/collector/event \
-  -H "Authorization: Splunk YOUR_HEC_TOKEN" \
-  -d '{"event": "test", "sourcetype": "manual"}'
-```
-
-### Common Issues
-
-**Import Errors**:
-```bash
-# Reinstall dependencies
-pip install --user -r requirements.txt
-```
-
-**Permission Denied on run_collector.sh**:
-```bash
-chmod +x run_collector.sh
-```
-
-**No Data Collected**:
-- Check `.env` credentials are correct
-- Verify Tenable API keys have proper permissions
-- Check HEC token is valid
-- Review logs: `tail -f logs/tenable_integration.log`
-
-**Python 3.6.8 Compatibility**:
-- Script uses `.format()` instead of f-strings
-- No type annotations in runtime code
-- Compatible package versions specified in requirements.txt
-
-### Verify Compatibility
-
-Run compatibility tests:
-```bash
-python test_compatibility.py
-```
-
-Expected output:
-```
-============================================================
-Python 3.6.8 Compatibility Test
-============================================================
-Python Version: PASS
-Imports: PASS
-Checkpoint Manager: PASS
-String Formatting: PASS
-============================================================
-SUCCESS: All compatibility tests passed!
+```cron
+0 2 * * * cd /path/to/tenable-hec-integration && /usr/bin/python3 tenable_collector.py >> logs/collector.log 2>&1
 ```
 
 ## File Structure
 
 ```
 tenable-hec-integration/
-├── tenable_collector.py          # Main unified collection script
-├── checkpoint_manager.py         # File-based checkpoint system
-├── tenable_common.py             # Shared utilities (HEC handler, logging)
-├── http_event_collector.py       # Cribl HEC client library
-├── run_collector.sh              # Convenience wrapper script
-├── test_compatibility.py         # Python 3.6.8 compatibility tests
-├── test_tenable_access.py        # Tenable API connection test
-├── requirements.txt              # Python dependencies
-├── .env.example                  # Environment template
-├── .env                          # Your configuration (git-ignored)
-├── README.md                     # This file
-├── README_PRODUCTION.md          # Detailed production guide
-├── checkpoints/                  # Checkpoint JSON files (created at runtime)
-├── logs/                         # Log files (created at runtime)
-└── deprecated/                   # Old Redis-based scripts (archived)
+├── tenable_collector.py    # Main entry point
+├── tenable_common.py       # HEC handler
+├── http_event_collector.py # HEC client
+├── checkpoint_manager.py   # Checkpoint system
+├── process_lock.py         # Overlap prevention
+├── feeds/                  # Feed processors
+│   ├── base.py             # Base class
+│   ├── assets.py           # Asset feeds (4 types)
+│   ├── vulnerabilities.py  # Vulnerability feeds (4 types)
+│   └── plugins.py          # Plugin & Compliance feeds
+├── checkpoints/            # Checkpoint data (auto-created)
+├── locks/                  # Lock files (auto-created)
+├── logs/                   # Log files (auto-created)
+├── .env                    # Configuration
+└── requirements.txt        # Python dependencies
 ```
 
-## Architecture
+## Feed Types
 
-### No Redis Required
+| Feed | Source | Description |
+|------|--------|-------------|
+| `asset` | exports.assets() | All assets |
+| `asset_self_scan` | exports.assets() | Self-scan assets |
+| `deleted_asset` | exports.assets() | Deleted assets |
+| `terminated_asset` | exports.assets() | Terminated assets |
+| `vuln` | exports.vulns() | All vulnerabilities |
+| `vuln_no_info` | exports.vulns() | Vulnerabilities (no info severity) |
+| `vuln_self_scan` | exports.vulns() | Self-scan vulnerabilities |
+| `fixed_vuln` | exports.vulns() | Fixed vulnerabilities |
+| `plugin` | plugins.families() | Plugin definitions |
+| `compliance` | scans.list() | Compliance scan results |
 
-Previous versions used Redis for checkpointing. This version uses simple JSON files:
+## Logs
 
-**Benefits**:
-- No external service installation needed
-- Works in restricted environments
-- Simpler deployment and maintenance
-- No network dependency
-- Easy to backup and inspect
-
-### Python 3.6.8 Compatibility
-
-Designed to work on older production systems:
-- Uses `.format()` string formatting instead of f-strings
-- No type annotations in runtime code
-- Compatible dependency versions
-- Tested on Python 3.6.8+
-
-## Security Best Practices
-
-- **Never commit `.env`**: Already in `.gitignore`
-- **Restrict file permissions**: `chmod 600 .env`
-- **Use dedicated API keys**: Create Tenable API keys specifically for this integration
-- **Enable HEC SSL in production**: Set `CRIBL_HEC_SSL_VERIFY=true` with valid certificates
-- **Rotate credentials regularly**: Update API keys and HEC tokens periodically
-- **Run with minimal privileges**: No root/sudo required
-
-## Migration from Redis Version
-
-If migrating from the Redis-based version:
-
-1. **Backup existing checkpoints** (optional):
-   ```bash
-   redis-cli KEYS "tenable:checkpoint:*" > redis_backup.txt
-   ```
-
-2. **Install new version**:
-   ```bash
-   git pull
-   pip install --user -r requirements.txt
-   ```
-
-3. **Update `.env`**:
-   - Remove `REDIS_*` variables
-   - Add `CHECKPOINT_DIR=checkpoints`
-
-4. **Run new version**:
-   ```bash
-   ./run_collector.sh --types all
-   ```
-
-Checkpoints will start fresh. The script will only collect new/modified data going forward.
-
-## Advanced Usage
-
-### Custom Checkpoint Directory
+Logs are written to stdout and can be redirected:
 
 ```bash
-export CHECKPOINT_DIR=/var/lib/tenable/checkpoints
-python tenable_collector.py --once --types all
+# View live logs
+python3 tenable_collector.py
+
+# Save to file
+python3 tenable_collector.py >> logs/collector.log 2>&1
+
+# View recent logs
+tail -f logs/collector.log
 ```
 
-### Run Specific Severity Vulnerabilities
+## Troubleshooting
 
-The script automatically filters vulnerabilities:
-- `vulnerabilities`: High, Critical, Medium severity
-- `vulnerabilities_no_info`: Info severity only
+### "Another process is already running"
 
-### Parallel Execution
+The process lock prevents overlapping runs. Wait for the current run to finish, or if it's stale (>10 min), it will auto-release.
 
-Different data types can run in parallel:
+To manually clear:
 ```bash
-python tenable_collector.py --once --types assets &
-python tenable_collector.py --once --types vulnerabilities &
-python tenable_collector.py --once --types scans &
-wait
+rm locks/tenable_collector.lock
 ```
 
-## Support
+### "Authentication error"
 
-- **Documentation**: See `README_PRODUCTION.md` for detailed production deployment guide
-- **Issues**: Open an issue on GitHub
-- **Tenable API**: https://developer.tenable.com/
-- **Cribl Docs**: https://docs.cribl.io/
+Verify your Tenable API keys in `.env`:
+```bash
+TENABLE_ACCESS_KEY=your_key
+TENABLE_SECRET_KEY=your_secret
+```
 
-## License
+### HEC Connection Failed
 
-This project uses the following open-source libraries:
-- [pyTenable](https://github.com/tenable/pyTenable) - MIT License
-- [Splunk-Class-httpevent](https://github.com/georgestarcher/Splunk-Class-httpevent) - Apache License 2.0
+1. Check Cribl HEC is enabled and listening
+2. Verify `CRIBL_HEC_HOST`, `CRIBL_HEC_PORT`, `CRIBL_HEC_TOKEN`
+3. Check firewall allows connection
+
+## Requirements
+
+- Python 3.6+
+- Tenable.io API access
+- Cribl HEC endpoint
