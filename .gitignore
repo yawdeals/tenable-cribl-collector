@@ -1,8 +1,47 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
-*.log
-.env
-checkpoints/
+*.pyd
+.Python
+*.so
+
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
 *.swp
+*.swo
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/*
+!logs/.gitkeep
+
+# Runtime directories (auto-created)
+checkpoints/*
+!checkpoints/.gitkeep
+locks/*
+!locks/.gitkeep
+
+# Environment (contains secrets)
+.env
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Build
+dist/
+build/
+*.egg-info/

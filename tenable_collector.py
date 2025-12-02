@@ -9,7 +9,7 @@ from tenable.io import TenableIO
 from checkpoint_manager import FileCheckpoint
 from process_lock import ProcessLock
 from tenable_common import CriblHECHandler, setup_logging
-from feeds.assets import (AssetFeedProcessor, AssetSelfScanProcessor, 
+from feeds.assets import (AssetFeedProcessor, AssetSelfScanProcessor,
                           DeletedAssetProcessor, TerminatedAssetProcessor)
 from feeds.vulnerabilities import (VulnerabilityFeedProcessor, VulnerabilityNoInfoProcessor,
                                    VulnerabilitySelfScanProcessor, FixedVulnerabilityProcessor)
@@ -17,29 +17,31 @@ from feeds.plugins import (PluginFeedProcessor, ComplianceFeedProcessor)
 
 
 class TenableIntegration:
-    
+
     def __init__(self):
         load_dotenv()
-        
+
         log_level = os.getenv('LOG_LEVEL', 'INFO')
         setup_logging(log_level, 'tenable_integration.log')
         self.logger = logging.getLogger(__name__)
-        
+
         self.tenable = TenableIO(
             access_key=os.getenv('TENABLE_ACCESS_KEY'),
             secret_key=os.getenv('TENABLE_SECRET_KEY'),
             url=os.getenv('TENABLE_URL', 'https://cloud.tenable.com')
         )
         self.logger.info("Initialized Tenable.io client")
-        
+
         self.cribl = CriblHECHandler(
             host=os.getenv('CRIBL_HEC_HOST'),
             port=int(os.getenv('CRIBL_HEC_PORT', 8088)),
             token=os.getenv('CRIBL_HEC_TOKEN'),
             index='', sourcetype='', source='',
-            ssl_verify=os.getenv('CRIBL_HEC_SSL_VERIFY', 'true').lower() == 'true'
+            ssl_verify=os.getenv(
+                'CRIBL_HEC_SSL_VERIFY',
+                'true').lower() == 'true'
         )
-        
+
         self.checkpoint = FileCheckpoint(
             checkpoint_dir=os.getenv('CHECKPOINT_DIR', 'checkpoints'),
             key_prefix='tenable',
@@ -47,16 +49,26 @@ class TenableIntegration:
             retention_days=int(os.getenv('CHECKPOINT_RETENTION_DAYS', 30))
         )
         self.logger.info("Initialized file-based checkpointing")
-        
+
         self.batch_size = int(os.getenv('HEC_BATCH_SIZE', 5000))
-        self.logger.info("Batch size configured: {0} events".format(self.batch_size))
-        
+        self.logger.info(
+            "Batch size configured: {0} events".format(
+                self.batch_size))
+
+        self.max_events = int(os.getenv('MAX_EVENTS_PER_FEED', 0))
+        if self.max_events > 0:
+            self.logger.info(
+                "Max events per feed: {0}".format(
+                    self.max_events))
+        else:
+            self.logger.info("Max events per feed: unlimited")
+
         self._feed_processors = {}
-    
+
     def _get_processor(self, feed_name):
         if feed_name in self._feed_processors:
             return self._feed_processors[feed_name]
-        
+
         processor_map = {
             'tenableio_asset': AssetFeedProcessor,
             'tenableio_asset_self_scan': AssetSelfScanProcessor,
@@ -69,15 +81,20 @@ class TenableIntegration:
             'tenableio_plugin': PluginFeedProcessor,
             'tenableio_compliance': ComplianceFeedProcessor
         }
-        
+
         processor_class = processor_map.get(feed_name)
         if not processor_class:
             raise ValueError("Unknown feed type: {0}".format(feed_name))
-        
-        processor = processor_class(self.tenable, self.checkpoint, self.cribl, self.batch_size)
+
+        processor = processor_class(
+            self.tenable,
+            self.checkpoint,
+            self.cribl,
+            self.batch_size,
+            self.max_events)
         self._feed_processors[feed_name] = processor
         return processor
-    
+
     def run_once(self, data_types):
         # Acquire process lock to prevent overlapping runs
         lock = ProcessLock(
@@ -85,31 +102,36 @@ class TenableIntegration:
             lock_dir=os.getenv('LOCK_DIR', 'locks'),
             timeout=int(os.getenv('LOCK_TIMEOUT', 600))
         )
-        
+
         if not lock.acquire():
             self.logger.error("Another instance is already running. Exiting.")
             return
-        
+
         try:
             self.logger.info("=" * 80)
             self.logger.info("STARTING TENABLE TO CRIBL INTEGRATION")
             self.logger.info("=" * 80)
-            self.logger.info("Selected feeds: {0}".format(', '.join(data_types)))
+            self.logger.info(
+                "Selected feeds: {0}".format(
+                    ', '.join(data_types)))
             self.logger.info("Batch size: {0} events".format(self.batch_size))
-            self.logger.info("Timestamp: {0}".format(time.strftime('%Y-%m-%d %H:%M:%S')))
+            self.logger.info(
+                "Timestamp: {0}".format(
+                    time.strftime('%Y-%m-%d %H:%M:%S')))
             self.logger.info("=" * 80)
-            
+
             all_feeds = [
                 'tenableio_asset', 'tenableio_asset_self_scan', 'tenableio_compliance',
                 'tenableio_deleted_asset', 'tenableio_fixed_vulnerability', 'tenableio_plugin',
                 'tenableio_terminated_asset', 'tenableio_vulnerability',
                 'tenableio_vulnerability_no_info', 'tenableio_vulnerability_self_scan'
             ]
-            
-            feeds_to_process = all_feeds if 'all' in data_types else [f for f in data_types if f in all_feeds]
+
+            feeds_to_process = all_feeds if 'all' in data_types else [
+                f for f in data_types if f in all_feeds]
             total_events = 0
             feed_results = {}
-            
+
             for feed_name in feeds_to_process:
                 try:
                     processor = self._get_processor(feed_name)
@@ -117,38 +139,50 @@ class TenableIntegration:
                     total_events += event_count
                     feed_results[feed_name] = event_count
                 except Exception as e:
-                    self.logger.error("Failed to process feed {0}: {1}".format(feed_name, str(e)), exc_info=True)
+                    self.logger.error(
+                        "Failed to process feed {0}: {1}".format(
+                            feed_name, str(e)), exc_info=True)
                     feed_results[feed_name] = 0
-            
+
             self.logger.info("=" * 80)
             self.logger.info("INTEGRATION COMPLETED SUCCESSFULLY")
             self.logger.info("=" * 80)
             self.logger.info("Feed Collection Summary:")
             for feed_name in feeds_to_process:
                 event_count = feed_results.get(feed_name, 0)
-                self.logger.info("  {0}: {1} events".format(feed_name, event_count))
+                self.logger.info(
+                    "  {0}: {1} events".format(
+                        feed_name, event_count))
             self.logger.info("-" * 80)
-            self.logger.info("Total events sent to Cribl: {0}".format(total_events))
+            self.logger.info(
+                "Total events sent to Cribl: {0}".format(total_events))
             self.logger.info("=" * 80)
         except Exception as e:
-            self.logger.error("ERROR during integration run: {0}".format(str(e)), exc_info=True)
+            self.logger.error(
+                "ERROR during integration run: {0}".format(
+                    str(e)), exc_info=True)
             raise
         finally:
             lock.release()
-    
+
     def run_daemon(self, data_types, interval=3600):
-        self.logger.info("Starting daemon mode (interval: {0}s)...".format(interval))
+        self.logger.info(
+            "Starting daemon mode (interval: {0}s)...".format(interval))
         while True:
             try:
                 self.run_once(data_types)
-                self.logger.info("Sleeping for {0} seconds...".format(interval))
+                self.logger.info(
+                    "Sleeping for {0} seconds...".format(interval))
                 time.sleep(interval)
             except KeyboardInterrupt:
                 self.logger.info("Received shutdown signal, exiting...")
                 break
             except Exception as e:
-                self.logger.error("Error in daemon loop: {0}".format(str(e)), exc_info=True)
-                self.logger.info("Waiting {0} seconds before retry...".format(interval))
+                self.logger.error(
+                    "Error in daemon loop: {0}".format(
+                        str(e)), exc_info=True)
+                self.logger.info(
+                    "Waiting {0} seconds before retry...".format(interval))
                 time.sleep(interval)
 
 
@@ -176,24 +210,24 @@ Examples:
   python tenable_collector.py --feed all --daemon --interval 3600
         """
     )
-    
+
     parser.add_argument('--feed', nargs='+', default=['all'], dest='types',
-                       choices=['all', 'tenableio_asset', 'tenableio_asset_self_scan',
-                               'tenableio_compliance', 'tenableio_deleted_asset',
-                               'tenableio_fixed_vulnerability', 'tenableio_plugin',
-                               'tenableio_terminated_asset', 'tenableio_vulnerability',
-                               'tenableio_vulnerability_no_info', 'tenableio_vulnerability_self_scan'],
-                       help='Feed types to collect (default: all)')
-    
+                        choices=['all', 'tenableio_asset', 'tenableio_asset_self_scan',
+                                 'tenableio_compliance', 'tenableio_deleted_asset',
+                                 'tenableio_fixed_vulnerability', 'tenableio_plugin',
+                                 'tenableio_terminated_asset', 'tenableio_vulnerability',
+                                 'tenableio_vulnerability_no_info', 'tenableio_vulnerability_self_scan'],
+                        help='Feed types to collect (default: all)')
+
     parser.add_argument('--daemon', action='store_true',
-                       help='Run in daemon mode (continuous collection)')
-    
+                        help='Run in daemon mode (continuous collection)')
+
     parser.add_argument('--interval', type=int, default=3600,
-                       help='Seconds between runs in daemon mode (default: 3600)')
-    
+                        help='Seconds between runs in daemon mode (default: 3600)')
+
     args = parser.parse_args()
     integration = TenableIntegration()
-    
+
     if args.daemon:
         integration.run_daemon(args.types, args.interval)
     else:
