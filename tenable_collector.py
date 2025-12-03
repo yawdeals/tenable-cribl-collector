@@ -132,7 +132,8 @@ class TenableIntegration:
 
     def run_once(self, data_types):
         # Run collection once for specified feed types
-        # Note: No process lock needed - each feed uses separate checkpoint files
+        # Note: No process lock needed - each feed uses separate checkpoint
+        # files
         try:
             self.logger.info("=" * 80)
             self.logger.info("STARTING TENABLE TO CRIBL INTEGRATION")

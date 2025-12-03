@@ -35,7 +35,7 @@ class BaseFeedProcessor(object):
         self._buffer_ids = []  # IDs of buffered events for checkpointing
         self._start_time = None  # Track processing time
         self._hec_sent_count = 0  # Track events successfully sent to HEC
-        
+
         # Set up feed-specific log file
         self._setup_feed_logging(checkpoint_key)
 
@@ -44,7 +44,7 @@ class BaseFeedProcessor(object):
         log_dir = 'logs'
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
-        
+
         feed_log_file = os.path.join(log_dir, f'{checkpoint_key}.log')
         feed_handler = logging.FileHandler(feed_log_file)
         feed_handler.setLevel(logging.INFO)
@@ -53,7 +53,7 @@ class BaseFeedProcessor(object):
         )
         feed_handler.setFormatter(formatter)
         self.logger.addHandler(feed_handler)
-    
+
     def log_start(self):
         self._start_time = time.time()
         self._hec_sent_count = 0
@@ -80,7 +80,12 @@ class BaseFeedProcessor(object):
         rate = count / elapsed if elapsed > 0 else 0
         self.logger.info(
             "  Completed {0}: {1:,} events processed, {2:,} sent to HEC in {3:.1f}min ({4:.0f}/sec)".format(
-                self.feed_name, count, self._hec_sent_count, elapsed / 60, rate))
+                self.feed_name,
+                count,
+                self._hec_sent_count,
+                elapsed /
+                60,
+                rate))
 
     def send_event(self, event_data, item_id=None):
         # Buffer event for batch sending (auto-flushes when batch size reached)
