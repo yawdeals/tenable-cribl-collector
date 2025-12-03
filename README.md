@@ -198,7 +198,6 @@ tenable-cribl-collector/
 ├── tenable_common.py       # HEC handler and logging setup
 ├── http_event_collector.py # HEC client
 ├── checkpoint_manager.py   # Checkpoint system
-├── process_lock.py         # Overlap prevention
 ├── feeds/                  # Feed processors
 │   ├── __init__.py         # Package init
 │   ├── base.py             # Base class for all processors
@@ -207,7 +206,6 @@ tenable-cribl-collector/
 │   └── plugins.py          # Plugin & Compliance feeds
 ├── venv/                   # Virtual environment (create this)
 ├── checkpoints/            # Checkpoint data (auto-created)
-├── locks/                  # Lock files (auto-created)
 ├── logs/                   # Log files (auto-created)
 │   ├── tenable_integration.log  # Main integration log (all feeds)
 │   ├── asset.log                # Asset Inventory feed log
@@ -233,12 +231,7 @@ tenable-cribl-collector/
 - Initializes HEC handler for Cribl
 - Loads checkpoint data from previous runs
 
-### 2. Process Lock
-- Creates lock file in `locks/` directory
-- Prevents multiple instances from running simultaneously
-- Auto-releases stale locks after `LOCK_TIMEOUT` seconds
-
-### 3. Data Collection
+### 2. Data Collection
 For each enabled feed:
 1. Query Tenable.io API for data (exports, plugins, etc.)
 2. Check each item against checkpoint (skip already processed)
@@ -247,15 +240,15 @@ For each enabled feed:
 5. Send batch to Cribl HEC
 6. Update checkpoint with processed IDs
 
-### 4. Checkpointing
+### 3. Checkpointing
 - Stores processed item IDs in `checkpoints/` directory
 - Prevents duplicate event submission on subsequent runs
 - Auto-purges data older than `CHECKPOINT_RETENTION_DAYS`
 - First run collects all historical data; subsequent runs only collect new/changed items
 
-### 5. Completion
+### 4. Completion
 - Logs summary of events collected per feed
-- Releases process lock
+- Flushes all checkpoints to disk
 
 ## Configuration Reference
 
@@ -270,11 +263,11 @@ For each enabled feed:
 | `CRIBL_HEC_SSL_VERIFY` | true | Verify SSL certificates |
 | `HEC_BATCH_SIZE` | 5000 | Events per HEC batch |
 | `MAX_EVENTS_PER_FEED` | 0 | Max events per feed (0=unlimited) |
+| `MAX_CONCURRENT_FEEDS` | 0 | Concurrent feed workers (0=sequential, max 10) |
 | `CHECKPOINT_DIR` | checkpoints | Directory for checkpoint files |
 | `CHECKPOINT_MAX_IDS` | 100000 | Max IDs per checkpoint file |
 | `CHECKPOINT_RETENTION_DAYS` | 30 | Days to keep checkpoint data |
-| `LOCK_DIR` | locks | Directory for lock files |
-| `LOCK_TIMEOUT` | 600 | Seconds before lock considered stale |
+| `DELETED_ASSET_SCAN_INTERVAL_HOURS` | 24 | Hours between deleted asset scans |
 | `LOG_LEVEL` | INFO | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ## Logs
@@ -341,18 +334,9 @@ The script now automatically retries with exponential backoff:
 If all retries fail, wait 30-60 minutes for the existing export to complete, then re-run.
 
 **Prevention:**
-- Don't run multiple instances simultaneously
-- Use the process lock (`LOCK_TIMEOUT` in `.env`)
+- Each feed uses its own checkpoint file and can run independently
+- For concurrent execution, set `MAX_CONCURRENT_FEEDS=10` in `.env`
 - For large environments, increase `DELETED_ASSET_SCAN_INTERVAL_HOURS` to reduce frequency
-
-### "Another process is already running"
-
-The process lock prevents overlapping runs. Wait for the current run to finish, or if it's stale (older than `LOCK_TIMEOUT`), it will auto-release.
-
-To manually clear:
-```bash
-rm locks/tenable_collector.lock
-```
 
 ### "Authentication error" / 401 Unauthorized
 

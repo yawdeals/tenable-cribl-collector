@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from tenable.io import TenableIO
 from checkpoint_manager import FileCheckpoint
-from process_lock import ProcessLock
 from tenable_common import CriblHECHandler, setup_logging
 from feeds.assets import (AssetFeedProcessor, AssetSelfScanProcessor,
                           DeletedAssetProcessor, TerminatedAssetProcessor)
@@ -133,24 +132,7 @@ class TenableIntegration:
 
     def run_once(self, data_types):
         # Run collection once for specified feed types
-        # Process lock is optional (disable with ENABLE_PROCESS_LOCK=false)
-        use_lock = os.getenv('ENABLE_PROCESS_LOCK', 'true').lower() == 'true'
-        lock = None
-        
-        if use_lock:
-            lock = ProcessLock(
-                lock_file='tenable_collector.lock',
-                lock_dir=os.getenv('LOCK_DIR', 'locks'),
-                timeout=int(os.getenv('LOCK_TIMEOUT', 7200))  # 2 hours default
-            )
-
-            if not lock.acquire():
-                self.logger.error("Another instance is already running. Exiting.")
-                self.logger.info("To disable process lock, set ENABLE_PROCESS_LOCK=false in .env")
-                return
-        else:
-            self.logger.info("Process lock disabled - running without overlap protection")
-
+        # Note: No process lock needed - each feed uses separate checkpoint files
         try:
             self.logger.info("=" * 80)
             self.logger.info("STARTING TENABLE TO CRIBL INTEGRATION")
@@ -275,8 +257,6 @@ class TenableIntegration:
                 self.checkpoint.flush_all()
             except Exception:
                 pass
-            if lock:
-                lock.release()
 
     def run_daemon(self, data_types, interval=3600):
         self.logger.info(
