@@ -36,19 +36,15 @@ class BaseFeedProcessor(object):
 
     def log_start(self):
         self._start_time = time.time()
-        self.logger.info("=" * 80)
-        self.logger.info("Processing {0} feed...".format(self.feed_name))
-        if self.max_events > 0:
-            self.logger.info("Max events limit: {0}".format(self.max_events))
-        self.logger.info("=" * 80)
+        self.logger.info("Starting {0} feed...".format(self.feed_name))
 
     def log_progress(self, count, interval=1000):
         if count > 0 and count % interval == 0:
             elapsed = time.time() - self._start_time
             rate = count / elapsed if elapsed > 0 else 0
             self.logger.info(
-                "[{0}] {1:,} events processed ({2:.0f}/sec, {3:.1f}min elapsed)".format(
-                    self.feed_name, count, rate, elapsed / 60))
+                "  [{0}] {1:,} events processed ({2:.0f}/sec)".format(
+                    self.feed_name, count, rate))
 
     def should_stop(self, count):
         if self.max_events > 0 and count >= self.max_events:
@@ -62,7 +58,7 @@ class BaseFeedProcessor(object):
         elapsed = time.time() - self._start_time if self._start_time else 0
         rate = count / elapsed if elapsed > 0 else 0
         self.logger.info(
-            "Completed {0} feed: {1:,} events in {2:.1f}min ({3:.0f}/sec)".format(
+            "  Completed {0}: {1:,} events in {2:.1f}min ({3:.0f}/sec)".format(
                 self.feed_name, count, elapsed / 60, rate))
 
     def send_event(self, event_data, item_id=None):
@@ -95,7 +91,7 @@ class BaseFeedProcessor(object):
 
         try:
             batch_size = len(self._event_buffer)
-            self.logger.info(
+            self.logger.debug(
                 "Sending batch of {0} {1} events to HEC...".format(
                     batch_size, self.feed_name))
 
