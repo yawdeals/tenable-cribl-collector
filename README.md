@@ -209,6 +209,17 @@ tenable-cribl-collector/
 ├── checkpoints/            # Checkpoint data (auto-created)
 ├── locks/                  # Lock files (auto-created)
 ├── logs/                   # Log files (auto-created)
+│   ├── tenable_integration.log  # Main integration log (all feeds)
+│   ├── asset.log                # Asset Inventory feed log
+│   ├── asset_self_scan.log      # Agent-Based Assets feed log
+│   ├── compliance.log           # Compliance feed log
+│   ├── deleted_asset.log        # Deleted Assets feed log
+│   ├── fixed_vulnerability.log  # Fixed Vulnerabilities feed log
+│   ├── plugin.log               # Plugin feed log
+│   ├── terminated_asset.log     # Terminated Assets feed log
+│   ├── vulnerability.log        # Vulnerabilities feed log
+│   ├── vulnerability_no_info.log # Info-level Vulnerabilities feed log
+│   └── vulnerability_self_scan.log # Agent-based Vulnerabilities feed log
 ├── .env                    # Configuration (create from .env.example)
 ├── .env.example            # Example configuration
 └── requirements.txt        # Python dependencies
@@ -268,18 +279,49 @@ For each enabled feed:
 
 ## Logs
 
-Logs are written to stdout and `logs/tenable_integration.log`:
+Logs are written to both console and log files in the `logs/` directory:
 
+**Main Integration Log** (all activity):
+```bash
+tail -f logs/tenable_integration.log
+```
+
+**Per-Feed Logs** (individual feed details):
+```bash
+# Asset feed logs
+tail -f logs/asset.log
+tail -f logs/asset_self_scan.log
+tail -f logs/deleted_asset.log
+tail -f logs/terminated_asset.log
+
+# Vulnerability feed logs
+tail -f logs/vulnerability.log
+tail -f logs/vulnerability_no_info.log
+tail -f logs/vulnerability_self_scan.log
+tail -f logs/fixed_vulnerability.log
+
+# Plugin and compliance feed logs
+tail -f logs/plugin.log
+tail -f logs/compliance.log
+```
+
+**View all logs**:
 ```bash
 # View live logs during manual run
 python3 tenable_collector.py --feed all
 
-# View log file
-tail -f logs/tenable_integration.log
+# View all log files
+tail -f logs/*.log
 
-# View cron logs
+# View cron logs (if using cron/nohup)
 tail -f logs/cron.log
 ```
+
+**Log Organization**:
+- **tenable_integration.log**: Main orchestration logs (sequential/concurrent mode, feed queue, summary)
+- **[feed_name].log**: Feed-specific processing details (events processed, HEC sends, completion status)
+
+This separation makes it easier to troubleshoot specific feeds without sifting through all feed activity.
 
 ## Troubleshooting
 
