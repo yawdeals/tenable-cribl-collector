@@ -33,9 +33,11 @@ class BaseFeedProcessor(object):
         self._event_buffer = []  # Buffer for batching events
         self._buffer_ids = []  # IDs of buffered events for checkpointing
         self._start_time = None  # Track processing time
+        self._hec_sent_count = 0  # Track events successfully sent to HEC
 
     def log_start(self):
         self._start_time = time.time()
+        self._hec_sent_count = 0
         self.logger.info("Starting {0} feed...".format(self.feed_name))
 
     def log_progress(self, count, interval=1000):
@@ -58,8 +60,8 @@ class BaseFeedProcessor(object):
         elapsed = time.time() - self._start_time if self._start_time else 0
         rate = count / elapsed if elapsed > 0 else 0
         self.logger.info(
-            "  Completed {0}: {1:,} events in {2:.1f}min ({3:.0f}/sec)".format(
-                self.feed_name, count, elapsed / 60, rate))
+            "  Completed {0}: {1:,} events processed, {2:,} sent to HEC in {3:.1f}min ({4:.0f}/sec)".format(
+                self.feed_name, count, self._hec_sent_count, elapsed / 60, rate))
 
     def send_event(self, event_data, item_id=None):
         # Buffer event for batch sending (auto-flushes when batch size reached)
@@ -108,6 +110,9 @@ class BaseFeedProcessor(object):
                 for item_id in self._buffer_ids:
                     self.mark_processed(item_id)
 
+                # Track successful HEC sends
+                self._hec_sent_count += success_count
+
                 # Clear buffers
                 self._event_buffer = []
                 self._buffer_ids = []
@@ -122,6 +127,9 @@ class BaseFeedProcessor(object):
                 # items succeeded)
                 for i in range(min(success_count, len(self._buffer_ids))):
                     self.mark_processed(self._buffer_ids[i])
+
+                # Track partial HEC sends
+                self._hec_sent_count += success_count
 
                 # Clear buffers to prevent memory leak (items will be re-sent
                 # on next run via checkpoint)
