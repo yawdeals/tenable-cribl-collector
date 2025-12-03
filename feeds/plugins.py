@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Plugin and compliance feed processors using direct API calls (not exports)
 from feeds.base import BaseFeedProcessor
 import time
 import logging
@@ -10,10 +11,7 @@ def _safe_api_call_with_retry(
         max_retries=3,
         initial_wait=60,
         **kwargs):
-    """
-    Wrapper for Tenable API calls with retry logic for 429 and transient errors.
-    Unlike export functions, these are simple REST calls that don't stream data.
-    """
+    # Retry wrapper for Tenable REST API calls (non-export endpoints)
     logger = logging.getLogger(__name__)
 
     for attempt in range(max_retries):

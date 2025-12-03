@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Vulnerability feed processors with unique severity/state filters for
+# concurrent execution
 import time
 from feeds.base import BaseFeedProcessor
 from feeds.assets import _safe_export_with_retry
@@ -144,7 +146,8 @@ class VulnerabilitySelfScanProcessor(BaseFeedProcessor):
         try:
             self.logger.info("Initiating agent-based vulnerability export...")
             # Use state='OPEN' to differentiate this export from others
-            # Note: We still filter by has_agent locally since API doesn't support that filter
+            # Note: We still filter by has_agent locally since API doesn't
+            # support that filter
             for vuln in _safe_export_with_retry(
                 lambda: self.tenable.exports.vulns(state='OPEN'),
                 "Agent-Based Vulnerabilities"

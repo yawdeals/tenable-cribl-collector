@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Asset feed processors with retry logic and unique export filters for
+# concurrent execution
 import time
 import logging
 from feeds.base import BaseFeedProcessor
@@ -9,18 +11,7 @@ def _safe_export_with_retry(
         feed_name,
         max_retries=3,
         initial_wait=300):
-    """
-    Wrapper to safely call Tenable export functions with retry logic for 429 errors.
-
-    Args:
-        export_func: The export function to call (e.g., lambda: tenable.exports.assets())
-        feed_name: Name of the feed for logging
-        max_retries: Maximum number of retries (default: 3)
-        initial_wait: Initial wait time in seconds for 429 errors (default: 5 minutes)
-
-    Yields:
-        Export results from the export_func
-    """
+    # Retry wrapper for Tenable exports with exponential backoff for 429 errors
     logger = logging.getLogger(__name__)
     wait_time = initial_wait
 
@@ -31,19 +22,18 @@ def _safe_export_with_retry(
 
             export_started = False
             for item in export_func():
-                export_started = True
+                export_started = True  # Track if export started successfully
                 yield item
 
-            # If we get here, export completed successfully
+            # Export completed successfully
             return
 
         except Exception as e:
             error_msg = str(e).lower()
 
-            # Only retry if export hasn't started yet (prevents duplicate
-            # items)
+            # Only retry if export hasn't started (prevents duplicate items)
             if not export_started:
-                # Check for 429 rate limit / duplicate export error
+                # Check for 429 rate limit or duplicate export error
                 if '429' in error_msg or 'duplicate export' in error_msg or 'export already running' in error_msg:
                     if attempt < max_retries:
                         logger.warning(
@@ -55,7 +45,7 @@ def _safe_export_with_retry(
                             "This can take 10-30 minutes to complete on Tenable's side.")
 
                         time.sleep(wait_time)
-                        # Exponential backoff, max 30 min
+                        # Exponential backoff (max 30 min)
                         wait_time = min(wait_time * 1.5, 1800)
                         continue
                     else:
@@ -148,12 +138,14 @@ class AssetSelfScanProcessor(BaseFeedProcessor):
         try:
             self.logger.info("Initiating agent-based asset export...")
             # Note: Tenable API doesn't have has_agent filter, so we use sources filter
-            # to differentiate this export from others (agents typically show as 'NESSUS_AGENT')
+            # to differentiate this export from others (agents typically show
+            # as 'NESSUS_AGENT')
             for asset in _safe_export_with_retry(
                 lambda: self.tenable.exports.assets(sources=['NESSUS_AGENT']),
                 "Agent-Based Assets"
             ):
-                # Double-check has_agent flag (some agents may have different sources)
+                # Double-check has_agent flag (some agents may have different
+                # sources)
                 if not asset.get('has_agent', False):
                     continue
 
@@ -200,7 +192,7 @@ class DeletedAssetProcessor(BaseFeedProcessor):
             os.getenv('DELETED_ASSET_SCAN_INTERVAL_HOURS', 24))
 
     def _should_run_full_scan(self):
-        """Check if enough time has passed since last full scan"""
+        # Check if enough time has passed since last full scan
         # Load checkpoint first to ensure cache is populated
         self.checkpoint._load_checkpoint('deleted_asset')
         checkpoint_data = self.checkpoint._cache.get('deleted_asset', {})

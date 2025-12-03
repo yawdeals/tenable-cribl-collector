@@ -92,10 +92,11 @@ python3 tenable_collector.py --feed all --daemon --interval 3600
 #   tenableio_compliance             - Compliance findings
 ```
 
-## Scheduling with Cron
+## Scheduling
 
-### Recommended: Daily Run at 2 AM (Option 1 - Best for Large Environments)
+### Option 1: Using Cron (Recommended)
 
+**Daily run at 2 AM:**
 ```bash
 crontab -e
 ```
@@ -110,8 +111,7 @@ Add:
 - Subsequent runs: Only collects new/changed data via checkpoints (fast)
 - The process lock prevents overlapping runs if one takes longer than 24 hours
 
-### Alternative Schedules
-
+**Alternative schedules:**
 ```cron
 # Every 6 hours
 0 */6 * * * cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed all >> logs/cron.log 2>&1
@@ -120,6 +120,44 @@ Add:
 0 1 * * * cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed tenableio_asset >> logs/cron.log 2>&1
 0 3 * * * cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed tenableio_vulnerability >> logs/cron.log 2>&1
 0 5 * * 0 cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed tenableio_plugin >> logs/cron.log 2>&1
+```
+
+### Option 2: Using nohup (When cron access is restricted)
+
+**Run in daemon mode (continuous background execution):**
+```bash
+# Every 6 hours (21600 seconds)
+nohup /path/to/tenable-cribl-collector/run_tenable.sh --feed all --daemon --interval 21600 >> /path/to/tenable-cribl-collector/logs/daemon.log 2>&1 &
+```
+
+**Or single run in background:**
+```bash
+nohup /path/to/tenable-cribl-collector/run_tenable.sh --feed all >> /path/to/tenable-cribl-collector/logs/nohup.log 2>&1 &
+```
+
+**Check if daemon is running:**
+```bash
+ps aux | grep tenable_collector
+```
+
+**Stop daemon:**
+```bash
+# Find the process ID
+ps aux | grep tenable_collector
+
+# Kill the process
+kill <PID>
+```
+
+**View daemon logs:**
+```bash
+tail -f /path/to/tenable-cribl-collector/logs/daemon.log
+```
+
+**Auto-start on system boot (add to /etc/rc.local or systemd):**
+```bash
+# Add to /etc/rc.local (before exit 0)
+nohup /path/to/tenable-cribl-collector/run_tenable.sh --feed all --daemon --interval 21600 >> /path/to/tenable-cribl-collector/logs/daemon.log 2>&1 &
 ```
 
 ## Event Classification
@@ -150,25 +188,6 @@ Every event sent to HEC includes a `_tenable_feed` field for easy filtering:
 | `tenableio_fixed_vulnerability` | fixed_vulnerability | Fixed Vulnerabilities | tenable:io:vulnerability:fixed |
 | `tenableio_plugin` | plugin | Plugin Metadata | tenable:io:plugin |
 | `tenableio_compliance` | compliance | Compliance Findings | tenable:io:compliance |
-
-## Filtering in Cribl/Splunk
-
-```spl
-# All vulnerability events
-index=tenable sourcetype="tenable:io:vulnerability"
-
-# Using _tenable_feed field
-index=tenable | spath "_tenable_feed.feed_type" | search feed_type="vulnerability"
-
-# High severity vulnerabilities
-index=tenable sourcetype="tenable:io:vulnerability" severity="high" OR severity="critical"
-
-# Specific asset
-index=tenable | spath "asset.hostname" | search hostname="server01*"
-
-# Fixed vulnerabilities in last 24 hours
-index=tenable sourcetype="tenable:io:vulnerability:fixed" earliest=-24h
-```
 
 ## File Structure
 

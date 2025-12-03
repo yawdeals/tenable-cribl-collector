@@ -118,7 +118,7 @@ class TenableIntegration:
         return processor
 
     def _process_feed(self, feed_name):
-        """Process a single feed (thread-safe for concurrent execution)"""
+        # Process a single feed (thread-safe for concurrent execution)
         try:
             processor = self._get_processor(feed_name)
             event_count = processor.process()
@@ -182,14 +182,14 @@ class TenableIntegration:
                 self.logger.info(
                     "Processing {0} feeds concurrently with {1} workers".format(
                         len(feeds_to_process), self.max_workers))
-                
+
                 with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                     # Submit all feed processing jobs
                     future_to_feed = {
                         executor.submit(self._process_feed, feed_name): feed_name
                         for feed_name in feeds_to_process
                     }
-                    
+
                     # Collect results as they complete
                     for future in as_completed(future_to_feed):
                         feed_name = future_to_feed[future]
@@ -210,7 +210,7 @@ class TenableIntegration:
                 self.logger.info(
                     "Processing {0} feeds sequentially".format(
                         len(feeds_to_process)))
-                
+
                 for feed_name in feeds_to_process:
                     try:
                         # Get or create processor for this feed
