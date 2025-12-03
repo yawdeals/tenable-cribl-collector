@@ -180,8 +180,9 @@ class TenableIntegration:
             if self.max_workers > 0:
                 # Concurrent execution with ThreadPoolExecutor
                 self.logger.info(
-                    "Processing {0} feeds concurrently with {1} workers".format(
-                        len(feeds_to_process), self.max_workers))
+                    "🚀 CONCURRENT MODE: Processing {0} feeds with {1} workers (up to {2} feeds running simultaneously)".format(
+                        len(feeds_to_process), self.max_workers, self.max_workers))
+                self.logger.info("Feeds queued: {0}".format(', '.join(feeds_to_process)))
 
                 with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                     # Submit all feed processing jobs
@@ -189,30 +190,36 @@ class TenableIntegration:
                         executor.submit(self._process_feed, feed_name): feed_name
                         for feed_name in feeds_to_process
                     }
+                    
+                    self.logger.info("✓ All {0} feeds submitted to thread pool - execution started".format(len(feeds_to_process)))
+                    completed = 0
 
                     # Collect results as they complete
                     for future in as_completed(future_to_feed):
                         feed_name = future_to_feed[future]
+                        completed += 1
                         try:
                             event_count = future.result()
                             total_events += event_count
                             feed_results[feed_name] = event_count
                             self.logger.info(
-                                "Feed {0} completed: {1} events".format(
-                                    feed_name, event_count))
+                                "✓ Feed {0} completed: {1} events ({2}/{3} feeds done)".format(
+                                    feed_name, event_count, completed, len(feeds_to_process)))
                         except Exception as e:
                             self.logger.error(
-                                "Failed to process feed {0}: {1}".format(
-                                    feed_name, str(e)), exc_info=True)
+                                "✗ Feed {0} failed: {1} ({2}/{3} feeds done)".format(
+                                    feed_name, str(e), completed, len(feeds_to_process)), exc_info=True)
                             feed_results[feed_name] = 0
             else:
                 # Sequential execution (default)
                 self.logger.info(
-                    "Processing {0} feeds sequentially".format(
+                    "📋 SEQUENTIAL MODE: Processing {0} feeds one at a time (set MAX_CONCURRENT_FEEDS > 0 for concurrent execution)".format(
                         len(feeds_to_process)))
+                self.logger.info("Feeds queued: {0}".format(', '.join(feeds_to_process)))
 
-                for feed_name in feeds_to_process:
+                for idx, feed_name in enumerate(feeds_to_process, 1):
                     try:
+                        self.logger.info("Processing feed {0}/{1}: {2}".format(idx, len(feeds_to_process), feed_name))
                         # Get or create processor for this feed
                         processor = self._get_processor(feed_name)
                         event_count = processor.process()
