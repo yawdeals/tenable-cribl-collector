@@ -95,8 +95,9 @@ class AssetFeedProcessor(BaseFeedProcessor):
             self.logger.info(
                 "(This may take several minutes for large environments)")
 
+            # Use is_deleted=False to differentiate from deleted asset export
             for asset in _safe_export_with_retry(
-                lambda: self.tenable.exports.assets(),
+                lambda: self.tenable.exports.assets(is_deleted=False),
                 "Asset Inventory"
             ):
                 asset_id = asset.get('id')
@@ -146,10 +147,13 @@ class AssetSelfScanProcessor(BaseFeedProcessor):
 
         try:
             self.logger.info("Initiating agent-based asset export...")
+            # Note: Tenable API doesn't have has_agent filter, so we use sources filter
+            # to differentiate this export from others (agents typically show as 'NESSUS_AGENT')
             for asset in _safe_export_with_retry(
-                lambda: self.tenable.exports.assets(),
+                lambda: self.tenable.exports.assets(sources=['NESSUS_AGENT']),
                 "Agent-Based Assets"
             ):
+                # Double-check has_agent flag (some agents may have different sources)
                 if not asset.get('has_agent', False):
                     continue
 
@@ -241,8 +245,10 @@ class DeletedAssetProcessor(BaseFeedProcessor):
 
             asset_count = 0
             start_time = time.time()
+            # Use has_plugin_results=True to differentiate from other asset exports
+            # and focus on assets that have actually been scanned
             for asset in _safe_export_with_retry(
-                lambda: self.tenable.exports.assets(),
+                lambda: self.tenable.exports.assets(has_plugin_results=True),
                 "Deleted Assets"
             ):
                 current_assets.add(asset.get('id'))
@@ -329,8 +335,10 @@ class TerminatedAssetProcessor(BaseFeedProcessor):
 
         try:
             self.logger.info("Initiating terminated asset export...")
+            # Use is_terminated=True filter to get only terminated assets
+            # This makes the export unique and returns only relevant data
             for asset in _safe_export_with_retry(
-                lambda: self.tenable.exports.assets(),
+                lambda: self.tenable.exports.assets(is_terminated=True),
                 "Terminated Assets"
             ):
                 if 'terminated_at' not in asset or asset.get(

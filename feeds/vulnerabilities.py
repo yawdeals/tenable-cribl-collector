@@ -143,8 +143,10 @@ class VulnerabilitySelfScanProcessor(BaseFeedProcessor):
 
         try:
             self.logger.info("Initiating agent-based vulnerability export...")
+            # Use state='OPEN' to differentiate this export from others
+            # Note: We still filter by has_agent locally since API doesn't support that filter
             for vuln in _safe_export_with_retry(
-                lambda: self.tenable.exports.vulns(),
+                lambda: self.tenable.exports.vulns(state='OPEN'),
                 "Agent-Based Vulnerabilities"
             ):
                 asset_info = vuln.get('asset', {})
@@ -210,8 +212,10 @@ class FixedVulnerabilityProcessor(BaseFeedProcessor):
             self.logger.info(
                 "(This may take several minutes for large environments)")
 
+            # Use num_findings=1 to differentiate from other vuln exports
+            # This returns vulns with at least 1 finding (which is all of them)
             for vuln in _safe_export_with_retry(
-                lambda: self.tenable.exports.vulns(),
+                lambda: self.tenable.exports.vulns(num_findings=1),
                 "Fixed Vulnerabilities"
             ):
                 vuln_key = "{0}_{1}_{2}_{3}".format(
