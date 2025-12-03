@@ -5,6 +5,7 @@ import argparse
 import logging
 import time
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from tenable.io import TenableIO
 from checkpoint_manager import FileCheckpoint
@@ -75,6 +76,15 @@ class TenableIntegration:
         else:
             self.logger.info("Max events per feed: unlimited")
 
+        # Configure concurrent workers (0 = sequential, 1+ = parallel)
+        self.max_workers = int(os.getenv('MAX_CONCURRENT_FEEDS', 0))
+        if self.max_workers > 0:
+            self.logger.info(
+                "Concurrent execution enabled: {0} workers".format(
+                    self.max_workers))
+        else:
+            self.logger.info("Sequential execution (default)")
+
         # Cache for feed processors (lazy initialization)
         self._feed_processors = {}
 
@@ -106,6 +116,20 @@ class TenableIntegration:
             self.max_events)
         self._feed_processors[feed_name] = processor
         return processor
+
+    def _process_feed(self, feed_name):
+        """Process a single feed (thread-safe for concurrent execution)"""
+        try:
+            processor = self._get_processor(feed_name)
+            event_count = processor.process()
+            # Flush checkpoint after processing
+            self.checkpoint.flush_all()
+            return event_count
+        except Exception as e:
+            self.logger.error(
+                "Error processing feed {0}: {1}".format(
+                    feed_name, str(e)), exc_info=True)
+            return 0
 
     def run_once(self, data_types):
         # Run collection once for specified feed types
@@ -152,22 +176,56 @@ class TenableIntegration:
             total_events = 0
             feed_results = {}
 
-            # Process each feed sequentially
-            for feed_name in feeds_to_process:
-                try:
-                    # Get or create processor for this feed
-                    processor = self._get_processor(feed_name)
-                    event_count = processor.process()
-                    total_events += event_count
-                    feed_results[feed_name] = event_count
-                    # Flush checkpoint after each feed to prevent duplicates on
-                    # crash
-                    self.checkpoint.flush_all()
-                except Exception as e:
-                    self.logger.error(
-                        "Failed to process feed {0}: {1}".format(
-                            feed_name, str(e)), exc_info=True)
-                    feed_results[feed_name] = 0
+            # Process feeds (sequential or concurrent based on max_workers)
+            if self.max_workers > 0:
+                # Concurrent execution with ThreadPoolExecutor
+                self.logger.info(
+                    "Processing {0} feeds concurrently with {1} workers".format(
+                        len(feeds_to_process), self.max_workers))
+                
+                with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                    # Submit all feed processing jobs
+                    future_to_feed = {
+                        executor.submit(self._process_feed, feed_name): feed_name
+                        for feed_name in feeds_to_process
+                    }
+                    
+                    # Collect results as they complete
+                    for future in as_completed(future_to_feed):
+                        feed_name = future_to_feed[future]
+                        try:
+                            event_count = future.result()
+                            total_events += event_count
+                            feed_results[feed_name] = event_count
+                            self.logger.info(
+                                "Feed {0} completed: {1} events".format(
+                                    feed_name, event_count))
+                        except Exception as e:
+                            self.logger.error(
+                                "Failed to process feed {0}: {1}".format(
+                                    feed_name, str(e)), exc_info=True)
+                            feed_results[feed_name] = 0
+            else:
+                # Sequential execution (default)
+                self.logger.info(
+                    "Processing {0} feeds sequentially".format(
+                        len(feeds_to_process)))
+                
+                for feed_name in feeds_to_process:
+                    try:
+                        # Get or create processor for this feed
+                        processor = self._get_processor(feed_name)
+                        event_count = processor.process()
+                        total_events += event_count
+                        feed_results[feed_name] = event_count
+                        # Flush checkpoint after each feed to prevent duplicates on
+                        # crash
+                        self.checkpoint.flush_all()
+                    except Exception as e:
+                        self.logger.error(
+                            "Failed to process feed {0}: {1}".format(
+                                feed_name, str(e)), exc_info=True)
+                        feed_results[feed_name] = 0
 
             self.logger.info("=" * 80)
             self.logger.info("INTEGRATION COMPLETED SUCCESSFULLY")
