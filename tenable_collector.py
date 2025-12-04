@@ -61,7 +61,7 @@ class TenableIntegration:
         self.logger.info("Initialized file-based checkpointing")
 
         # Configure batch size for HEC sends
-        self.batch_size = int(os.getenv('HEC_BATCH_SIZE', 5000))
+        self.batch_size = int(os.getenv('HEC_BATCH_SIZE', 10000))
         self.logger.info(
             "Batch size configured: {0} events".format(
                 self.batch_size))
@@ -75,14 +75,15 @@ class TenableIntegration:
         else:
             self.logger.info("Max events per feed: unlimited")
 
-        # Configure concurrent workers (0 = sequential, 1+ = parallel)
+        # Configure concurrent workers (0 = auto-tune, 1+ = explicit)
         self.max_workers = int(os.getenv('MAX_CONCURRENT_FEEDS', 0))
+        # Note: if 0, will auto-tune to min(10, feed_count) at runtime
         if self.max_workers > 0:
             self.logger.info(
-                "Concurrent execution enabled: {0} workers".format(
+                "Concurrent execution: {0} workers (explicit)".format(
                     self.max_workers))
         else:
-            self.logger.info("Sequential execution (default)")
+            self.logger.info("Concurrent execution: auto-tune (up to 10 workers)")
 
         # Cache for feed processors (lazy initialization)
         self._feed_processors = {}
@@ -166,67 +167,45 @@ class TenableIntegration:
             total_events = 0
             feed_results = {}
 
-            # Process feeds (sequential or concurrent based on max_workers)
-            if self.max_workers > 0:
-                # Concurrent execution with ThreadPoolExecutor
-                self.logger.info(
-                    "CONCURRENT MODE: Processing {0} feeds with {1} workers (up to {2} feeds running simultaneously)".format(
-                        len(feeds_to_process), self.max_workers, self.max_workers))
-                self.logger.info(
-                    "Feeds queued: {0}".format(
-                        ', '.join(feeds_to_process)))
+            # Auto-tune workers if not explicitly set
+            effective_workers = self.max_workers
+            if effective_workers == 0:
+                # Auto-tune: use min(10, feed_count) for optimal parallelism
+                effective_workers = min(10, len(feeds_to_process))
 
-                with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                    # Submit all feed processing jobs
-                    future_to_feed = {
-                        executor.submit(self._process_feed, feed_name): feed_name
-                        for feed_name in feeds_to_process
-                    }
+            # Process feeds concurrently with auto-tuned or explicit workers
+            self.logger.info(
+                "CONCURRENT MODE: Processing {0} feeds with {1} workers".format(
+                    len(feeds_to_process), effective_workers))
+            self.logger.info(
+                "Feeds queued: {0}".format(
+                    ', '.join(feeds_to_process)))
 
-                    self.logger.info(
-                        "All {0} feeds submitted to thread pool - execution started".format(len(feeds_to_process)))
-                    completed = 0
+            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+                # Submit all feed processing jobs
+                future_to_feed = {
+                    executor.submit(self._process_feed, feed_name): feed_name
+                    for feed_name in feeds_to_process
+                }
 
-                    # Collect results as they complete
-                    for future in as_completed(future_to_feed):
-                        feed_name = future_to_feed[future]
-                        completed += 1
-                        try:
-                            event_count = future.result()
-                            total_events += event_count
-                            feed_results[feed_name] = event_count
-                            self.logger.info(
-                                "Feed {0} completed: {1} events ({2}/{3} feeds done)".format(
-                                    feed_name, event_count, completed, len(feeds_to_process)))
-                        except Exception as e:
-                            self.logger.error("Feed {0} FAILED: {1} ({2}/{3} feeds done)".format(
-                                feed_name, str(e), completed, len(feeds_to_process)), exc_info=True)
-                            feed_results[feed_name] = 0
-            else:
-                # Sequential execution (default)
                 self.logger.info(
-                    "SEQUENTIAL MODE: Processing {0} feeds one at a time (set MAX_CONCURRENT_FEEDS > 0 for concurrent execution)".format(
-                        len(feeds_to_process)))
-                self.logger.info(
-                    "Feeds queued: {0}".format(
-                        ', '.join(feeds_to_process)))
+                    "All {0} feeds submitted to thread pool".format(len(feeds_to_process)))
+                completed = 0
 
-                for idx, feed_name in enumerate(feeds_to_process, 1):
+                # Collect results as they complete
+                for future in as_completed(future_to_feed):
+                    feed_name = future_to_feed[future]
+                    completed += 1
                     try:
-                        self.logger.info(
-                            "Processing feed {0}/{1}: {2}".format(idx, len(feeds_to_process), feed_name))
-                        # Get or create processor for this feed
-                        processor = self._get_processor(feed_name)
-                        event_count = processor.process()
+                        event_count = future.result()
                         total_events += event_count
                         feed_results[feed_name] = event_count
-                        # Flush checkpoint after each feed to prevent duplicates on
-                        # crash
-                        self.checkpoint.flush_all()
+                        self.logger.info(
+                            "Feed {0} completed: {1} events ({2}/{3} done)".format(
+                                feed_name, event_count, completed, len(feeds_to_process)))
                     except Exception as e:
-                        self.logger.error(
-                            "Failed to process feed {0}: {1}".format(
-                                feed_name, str(e)), exc_info=True)
+                        self.logger.error("Feed {0} FAILED: {1} ({2}/{3} done)".format(
+                            feed_name, str(e), completed, len(feeds_to_process)), exc_info=True)
                         feed_results[feed_name] = 0
 
             self.logger.info("=" * 80)

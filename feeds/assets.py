@@ -10,7 +10,7 @@ def _safe_export_with_retry(
         export_func,
         feed_name,
         max_retries=3,
-        initial_wait=300):
+        initial_wait=60):
     # Retry wrapper for Tenable exports with exponential backoff for 429 errors
     logger = logging.getLogger(__name__)
     wait_time = initial_wait
@@ -45,8 +45,8 @@ def _safe_export_with_retry(
                             "This can take 10-30 minutes to complete on Tenable's side.")
 
                         time.sleep(wait_time)
-                        # Exponential backoff (max 30 min)
-                        wait_time = min(wait_time * 1.5, 1800)
+                        # Exponential backoff (max 5 min)
+                        wait_time = min(wait_time * 1.5, 300)
                         continue
                     else:
                         logger.error(

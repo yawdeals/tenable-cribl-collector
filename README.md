@@ -50,7 +50,6 @@ HEC_BATCH_SIZE=10000              # Events per HEC batch
 MAX_EVENTS_PER_FEED=0             # 0=unlimited, or set limit (e.g., 50000)
 CHECKPOINT_MAX_IDS=100000         # Max IDs per checkpoint file
 CHECKPOINT_RETENTION_DAYS=30      # Days to keep checkpoint data
-LOCK_TIMEOUT=600                  # Stale lock timeout (seconds)
 DELETED_ASSET_SCAN_INTERVAL_HOURS=24  # How often to scan for deleted assets (default: 24)
 ```
 
@@ -261,9 +260,9 @@ For each enabled feed:
 | `CRIBL_HEC_PORT` | 8088 | Cribl HEC port |
 | `CRIBL_HEC_TOKEN` | (required) | Cribl HEC authentication token |
 | `CRIBL_HEC_SSL_VERIFY` | true | Verify SSL certificates |
-| `HEC_BATCH_SIZE` | 5000 | Events per HEC batch |
+| `HEC_BATCH_SIZE` | 10000 | Events per HEC batch |
 | `MAX_EVENTS_PER_FEED` | 0 | Max events per feed (0=unlimited) |
-| `MAX_CONCURRENT_FEEDS` | 0 | Concurrent feed workers (0=sequential, max 10) |
+| `MAX_CONCURRENT_FEEDS` | 0 | Concurrent feed workers (0=auto-tune, max 10) |
 | `CHECKPOINT_DIR` | checkpoints | Directory for checkpoint files |
 | `CHECKPOINT_MAX_IDS` | 100000 | Max IDs per checkpoint file |
 | `CHECKPOINT_RETENTION_DAYS` | 30 | Days to keep checkpoint data |

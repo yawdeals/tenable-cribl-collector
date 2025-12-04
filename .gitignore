@@ -32,8 +32,6 @@ logs/*
 # Runtime directories (auto-created)
 checkpoints/*
 !checkpoints/.gitkeep
-locks/*
-!locks/.gitkeep
 
 # Environment (contains secrets)
 .env

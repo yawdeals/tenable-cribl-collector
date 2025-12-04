@@ -17,7 +17,7 @@ class BaseFeedProcessor(object):
             checkpoint_key,
             sourcetype,
             feed_type,
-            batch_size=5000,
+            batch_size=10000,
             max_events=0):
         # Initialize processor with all required components
         self.tenable = tenable_client  # Tenable API client
@@ -28,7 +28,7 @@ class BaseFeedProcessor(object):
         self.sourcetype = sourcetype  # HEC sourcetype
         # Feed classification (asset, vulnerability, etc.)
         self.feed_type = feed_type
-        self.batch_size = batch_size  # Events per batch (default 5000)
+        self.batch_size = batch_size  # Events per batch (default 10000)
         self.max_events = max_events  # Max events to process (0 = unlimited)
         self.logger = logging.getLogger(__name__)
         self._event_buffer = []  # Buffer for batching events

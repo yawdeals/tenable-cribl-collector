@@ -9,6 +9,7 @@ import requests
 import json
 import time
 import socket
+import os
 from datetime import datetime
 
 
@@ -60,6 +61,9 @@ class http_event_collector:
             self.host = socket.gethostname()
 
         self.index = index
+
+        # Persistent session for connection reuse (reduces TLS handshake overhead)
+        self._session = requests.Session()
 
         # Disable SSL warnings if not verifying
         if not http_event_server_ssl:
@@ -115,9 +119,9 @@ class http_event_collector:
             'Content-Type': 'application/json'
         }
 
-        # Send to Splunk (bypass proxy)
+        # Send via persistent session (connection reuse)
         try:
-            response = requests.post(
+            response = self._session.post(
                 self.server_uri,
                 data=payload,
                 headers=headers,

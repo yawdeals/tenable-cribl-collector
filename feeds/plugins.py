@@ -9,7 +9,7 @@ def _safe_api_call_with_retry(
         api_func,
         *args,
         max_retries=3,
-        initial_wait=60,
+        initial_wait=30,
         **kwargs):
     # Retry wrapper for Tenable REST API calls (non-export endpoints)
     logger = logging.getLogger(__name__)
