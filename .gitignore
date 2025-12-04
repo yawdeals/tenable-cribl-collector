@@ -25,13 +25,10 @@ Thumbs.db
 *.DS_Store
 
 # Logs
-*.log
-logs/*
-!logs/.gitkeep
+logs/
 
 # Runtime directories (auto-created)
-checkpoints/*
-!checkpoints/.gitkeep
+checkpoints/
 
 # Environment (contains secrets)
 .env
