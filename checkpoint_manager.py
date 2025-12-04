@@ -6,11 +6,13 @@ import logging
 import time
 import tempfile
 import shutil
+import threading
 from typing import Optional, Set, Dict
 
 
 class FileCheckpoint:
     # Manages checkpoints with in-memory caching and periodic disk writes
+    # Thread-safe for concurrent feed processing
 
     def __init__(self, checkpoint_dir="checkpoints", key_prefix="tenable",
                  max_ids=100000, retention_days=30, flush_interval=100):
@@ -20,6 +22,9 @@ class FileCheckpoint:
         self.max_ids = max_ids  # Max IDs to track per feed
         self.retention_seconds = retention_days * 86400  # Convert days to seconds
         self.flush_interval = flush_interval  # Auto-flush after N IDs
+
+        # Thread lock for safe concurrent access
+        self._lock = threading.Lock()
 
         # In-memory cache for performance (reduces disk I/O)
         self._cache: Dict[str, Dict] = {}  # Cached checkpoint data
@@ -45,6 +50,7 @@ class FileCheckpoint:
 
     def _load_checkpoint(self, key):
         # Load checkpoint from disk into memory cache (lazy loading)
+        # Note: caller must hold self._lock
         if key in self._cache:
             return  # Already loaded
 
@@ -98,137 +104,147 @@ class FileCheckpoint:
 
     def flush(self, key=None):
         # Write cached checkpoint data to disk
-        keys_to_flush = [key] if key else list(self._dirty_keys)
+        with self._lock:
+            keys_to_flush = [key] if key else list(self._dirty_keys)
 
-        for k in keys_to_flush:
-            if k not in self._cache:
-                continue
+            for k in keys_to_flush:
+                if k not in self._cache:
+                    continue
 
-            filepath = self._get_checkpoint_file(k)
-            data = self._cache[k]
+                filepath = self._get_checkpoint_file(k)
+                data = self._cache[k]
 
-            try:
-                # Apply retention and size limits before write
-                current_time = int(time.time())
-                cutoff_time = current_time - self.retention_seconds
-                id_tracking = data.get('id_tracking', {})
+                try:
+                    # Apply retention and size limits before write
+                    current_time = int(time.time())
+                    cutoff_time = current_time - self.retention_seconds
+                    id_tracking = data.get('id_tracking', {})
 
-                # Remove expired IDs (older than retention period)
-                id_tracking = {
-                    id_key: ts for id_key, ts in id_tracking.items()
-                    if ts > cutoff_time
-                }
+                    # Remove expired IDs (older than retention period)
+                    id_tracking = {
+                        id_key: ts for id_key, ts in id_tracking.items()
+                        if ts > cutoff_time
+                    }
 
-                # Enforce max size limit (keep most recent IDs)
-                if len(id_tracking) > self.max_ids:
-                    sorted_ids = sorted(
-                        id_tracking.items(), key=lambda x: x[1], reverse=True)
-                    id_tracking = dict(sorted_ids[:self.max_ids])
-                    logging.warning(
-                        "Checkpoint {} trimmed to {} IDs".format(
-                            k, self.max_ids))
+                    # Enforce max size limit (keep most recent IDs)
+                    if len(id_tracking) > self.max_ids:
+                        sorted_ids = sorted(
+                            id_tracking.items(), key=lambda x: x[1], reverse=True)
+                        id_tracking = dict(sorted_ids[:self.max_ids])
+                        logging.warning(
+                            "Checkpoint {} trimmed to {} IDs".format(
+                                k, self.max_ids))
 
-                # Update cache and prepare for write
-                data['id_tracking'] = id_tracking
-                data['processed_ids'] = list(id_tracking.keys())
-                data['last_cleanup'] = current_time
-                data['total_tracked'] = len(id_tracking)
+                    # Update cache and prepare for write
+                    data['id_tracking'] = id_tracking
+                    data['processed_ids'] = list(id_tracking.keys())
+                    data['last_cleanup'] = current_time
+                    data['total_tracked'] = len(id_tracking)
 
-                # Write to disk atomically (prevents corruption)
-                self._atomic_write(filepath, data)
-                self._dirty_keys.discard(k)
-                self._pending_count[k] = 0
+                    # Write to disk atomically (prevents corruption)
+                    self._atomic_write(filepath, data)
+                    self._dirty_keys.discard(k)
+                    self._pending_count[k] = 0
 
-                logging.debug(
-                    "Flushed checkpoint {}: {} IDs".format(
-                        k, len(id_tracking)))
-            except Exception as e:
-                logging.error("Error flushing checkpoint {}: {}".format(k, e))
+                    logging.debug(
+                        "Flushed checkpoint {}: {} IDs".format(
+                            k, len(id_tracking)))
+                except Exception as e:
+                    logging.error("Error flushing checkpoint {}: {}".format(k, e))
 
     def flush_all(self):
         self.flush()
 
     def get_last_timestamp(self, key):
-        self._load_checkpoint(key)
-        return self._cache[key].get('last_timestamp')
+        with self._lock:
+            self._load_checkpoint(key)
+            return self._cache[key].get('last_timestamp')
 
     def set_last_timestamp(self, key, timestamp):
-        self._load_checkpoint(key)
-        self._cache[key]['last_timestamp'] = timestamp
-        self._dirty_keys.add(key)
+        with self._lock:
+            self._load_checkpoint(key)
+            self._cache[key]['last_timestamp'] = timestamp
+            self._dirty_keys.add(key)
         # Timestamps are important - flush immediately
         self.flush(key)
 
     def get_processed_ids(self, key):
-        self._load_checkpoint(key)
+        with self._lock:
+            self._load_checkpoint(key)
 
-        current_time = int(time.time())
-        cutoff_time = current_time - self.retention_seconds
-        id_tracking = self._cache[key].get('id_tracking', {})
+            current_time = int(time.time())
+            cutoff_time = current_time - self.retention_seconds
+            id_tracking = self._cache[key].get('id_tracking', {})
 
-        # Return only non-expired IDs
-        return {
-            id_key for id_key, ts in id_tracking.items()
-            if ts > cutoff_time
-        }
+            # Return only non-expired IDs
+            return {
+                id_key for id_key, ts in id_tracking.items()
+                if ts > cutoff_time
+            }
 
     def add_processed_id(self, key, item_id):
-        self._load_checkpoint(key)
+        with self._lock:
+            self._load_checkpoint(key)
 
-        # Add to in-memory cache
-        current_time = int(time.time())
-        self._cache[key].setdefault('id_tracking', {})[
-            str(item_id)] = current_time
-        self._dirty_keys.add(key)
-        self._pending_count[key] = self._pending_count.get(key, 0) + 1
+            # Add to in-memory cache
+            current_time = int(time.time())
+            self._cache[key].setdefault('id_tracking', {})[
+                str(item_id)] = current_time
+            self._dirty_keys.add(key)
+            self._pending_count[key] = self._pending_count.get(key, 0) + 1
 
-        # Auto-flush after flush_interval IDs
-        if self._pending_count[key] >= self.flush_interval:
+            # Check if auto-flush needed
+            should_flush = self._pending_count[key] >= self.flush_interval
+
+        # Auto-flush after flush_interval IDs (outside lock)
+        if should_flush:
             self.flush(key)
 
     def add_processed_ids_batch(self, key, item_ids):
         if not item_ids:
             return
 
-        self._load_checkpoint(key)
+        with self._lock:
+            self._load_checkpoint(key)
 
-        current_time = time.time()
-        id_tracking = self._cache[key].setdefault('id_tracking', {})
+            current_time = time.time()
+            id_tracking = self._cache[key].setdefault('id_tracking', {})
 
-        # Ensure timestamps are monotonically increasing across all batches
-        # This prevents the same timestamp range from being reused in
-        # subsequent batches
-        if current_time <= self._last_timestamp:
-            current_time = self._last_timestamp + 0.000001
+            # Ensure timestamps are monotonically increasing across all batches
+            # This prevents the same timestamp range from being reused in
+            # subsequent batches
+            if current_time <= self._last_timestamp:
+                current_time = self._last_timestamp + 0.000001
 
-        # Use incrementing microsecond timestamps to preserve order
-        # This ensures trimming keeps the most recently added IDs
-        for i, item_id in enumerate(item_ids):
-            # Add microseconds to ensure uniqueness and preserve order
-            timestamp = current_time + (i / 1000000.0)
-            id_tracking[str(item_id)] = timestamp
-            self._last_timestamp = timestamp  # Track globally across all batches
+            # Use incrementing microsecond timestamps to preserve order
+            # This ensures trimming keeps the most recently added IDs
+            for i, item_id in enumerate(item_ids):
+                # Add microseconds to ensure uniqueness and preserve order
+                timestamp = current_time + (i / 1000000.0)
+                id_tracking[str(item_id)] = timestamp
+                self._last_timestamp = timestamp  # Track globally across all batches
 
-        self._dirty_keys.add(key)
-        self._pending_count[key] = self._pending_count.get(
-            key, 0) + len(item_ids)
+            self._dirty_keys.add(key)
+            self._pending_count[key] = self._pending_count.get(
+                key, 0) + len(item_ids)
 
-        # Always flush after batch add
+        # Always flush after batch add (outside lock)
         self.flush(key)
 
     def is_processed(self, key, item_id):
-        self._load_checkpoint(key)
+        with self._lock:
+            self._load_checkpoint(key)
 
-        id_tracking = self._cache[key].get('id_tracking', {})
-        str_id = str(item_id)
+            id_tracking = self._cache[key].get('id_tracking', {})
+            str_id = str(item_id)
 
-        if str_id not in id_tracking:
-            return False
+            if str_id not in id_tracking:
+                return False
 
-        # Check if expired
-        current_time = int(time.time())
-        cutoff_time = current_time - self.retention_seconds
-        return id_tracking[str_id] > cutoff_time
+            # Check if expired
+            current_time = int(time.time())
+            cutoff_time = current_time - self.retention_seconds
+            return id_tracking[str_id] > cutoff_time
 
     def clear_checkpoint(self, key):
         filepath = self._get_checkpoint_file(key)
