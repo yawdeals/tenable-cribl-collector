@@ -59,7 +59,8 @@ class BaseFeedProcessor(object):
         self._hec_sent_count = 0
         self.logger.info("Starting {0} feed...".format(self.feed_name))
 
-    def log_progress(self, count, interval=1000):
+    def log_progress(self, count, interval=5000):
+        # Log every 5000 events instead of 1000 to reduce overhead
         if count > 0 and count % interval == 0:
             elapsed = time.time() - self._start_time
             rate = count / elapsed if elapsed > 0 else 0
@@ -130,9 +131,10 @@ class BaseFeedProcessor(object):
             )
 
             if success_count == batch_size:
-                # Mark all buffered IDs as processed to prevent duplicates
-                for item_id in self._buffer_ids:
-                    self.mark_processed(item_id)
+                # Batch checkpoint write for better performance
+                if self._buffer_ids:
+                    self.checkpoint.add_processed_ids_batch(
+                        self.checkpoint_key, self._buffer_ids)
 
                 # Track successful HEC sends
                 self._hec_sent_count += success_count
@@ -147,10 +149,12 @@ class BaseFeedProcessor(object):
                     "Partial batch send: {0}/{1} events sent successfully".format(
                         success_count, batch_size))
 
-                # Mark the successful items as processed (assuming first N
-                # items succeeded)
-                for i in range(min(success_count, len(self._buffer_ids))):
-                    self.mark_processed(self._buffer_ids[i])
+                # Batch checkpoint write for successful items
+                successful_ids = self._buffer_ids[:min(
+                    success_count, len(self._buffer_ids))]
+                if successful_ids:
+                    self.checkpoint.add_processed_ids_batch(
+                        self.checkpoint_key, successful_ids)
 
                 # Track partial HEC sends
                 self._hec_sent_count += success_count
