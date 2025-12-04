@@ -5,11 +5,13 @@ import argparse
 import logging
 import time
 import sys
+import signal
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from tenable.io import TenableIO
 from checkpoint_manager import FileCheckpoint
-from tenable_common import CriblHECHandler, setup_logging
+from tenable_common import CriblHECHandler, setup_logging, validate_environment, CollectorMetrics
 from feeds.assets import (AssetFeedProcessor, AssetSelfScanProcessor,
                           DeletedAssetProcessor, TerminatedAssetProcessor)
 from feeds.vulnerabilities import (
@@ -20,6 +22,10 @@ from feeds.vulnerabilities import (
 from feeds.plugins import (PluginFeedProcessor, ComplianceFeedProcessor)
 
 
+# Global shutdown event for graceful termination
+_shutdown_event = threading.Event()
+
+
 class TenableIntegration:
     # Main integration orchestrator for all Tenable feeds
 
@@ -27,10 +33,19 @@ class TenableIntegration:
         # Load environment variables from .env file
         load_dotenv()
 
+        # Validate required environment variables (fail fast)
+        validate_environment()
+
         # Set up logging
         log_level = os.getenv('LOG_LEVEL', 'INFO')
         setup_logging(log_level, 'tenable_integration.log')
         self.logger = logging.getLogger(__name__)
+
+        # Initialize metrics tracker
+        self.metrics = CollectorMetrics()
+
+        # Reference to global shutdown event
+        self._shutdown_event = _shutdown_event
 
         # Initialize Tenable.io API client
         self.tenable = TenableIO(
@@ -40,7 +55,7 @@ class TenableIntegration:
         )
         self.logger.info("Initialized Tenable.io client")
 
-        # Initialize Cribl HEC handler
+        # Initialize Cribl HEC handler with retry and pool settings
         self.cribl = CriblHECHandler(
             host=os.getenv('CRIBL_HEC_HOST'),
             port=int(os.getenv('CRIBL_HEC_PORT', 8088)),
@@ -48,7 +63,11 @@ class TenableIntegration:
             index='', sourcetype='', source='',
             ssl_verify=os.getenv(
                 'CRIBL_HEC_SSL_VERIFY',
-                'true').lower() == 'true'
+                'true').lower() == 'true',
+            max_retries=int(os.getenv('HEC_MAX_RETRIES', 3)),
+            backoff_factor=float(os.getenv('HEC_BACKOFF_FACTOR', 1.0)),
+            pool_connections=int(os.getenv('HEC_POOL_CONNECTIONS', 10)),
+            pool_maxsize=int(os.getenv('HEC_POOL_MAXSIZE', 10))
         )
 
         # Initialize checkpoint manager for deduplication
@@ -119,13 +138,25 @@ class TenableIntegration:
 
     def _process_feed(self, feed_name):
         # Process a single feed (thread-safe for concurrent execution)
+        # Check for shutdown before processing
+        if self._shutdown_event.is_set():
+            self.logger.warning("Shutdown requested, skipping feed: {0}".format(feed_name))
+            return 0
+
         try:
+            start_time = time.time()
             processor = self._get_processor(feed_name)
             event_count = processor.process()
+
+            # Track metrics
+            elapsed = time.time() - start_time
+            self.metrics.record_feed(feed_name, event_count, elapsed)
+
             # Flush checkpoint after processing
             self.checkpoint.flush_all()
             return event_count
         except Exception as e:
+            self.metrics.record_error(feed_name, str(e))
             self.logger.error(
                 "Error processing feed {0}: {1}".format(
                     feed_name, str(e)), exc_info=True)
@@ -136,6 +167,10 @@ class TenableIntegration:
         # Note: No process lock needed - each feed uses separate checkpoint
         # files
         try:
+            # Reset metrics for this run
+            self.metrics.reset()
+            run_start = time.time()
+
             self.logger.info("=" * 80)
             self.logger.info("STARTING TENABLE TO CRIBL INTEGRATION")
             self.logger.info("=" * 80)
@@ -220,6 +255,10 @@ class TenableIntegration:
             self.logger.info("-" * 80)
             self.logger.info(
                 "Total events sent to Cribl: {0}".format(total_events))
+
+            # Log metrics summary
+            run_elapsed = time.time() - run_start
+            self.metrics.log_summary(self.logger, run_elapsed)
             self.logger.info("=" * 80)
 
             # CRITICAL: Flush all checkpoints to disk to prevent duplicates
@@ -241,25 +280,62 @@ class TenableIntegration:
     def run_daemon(self, data_types, interval=3600):
         self.logger.info(
             "Starting daemon mode (interval: {0}s)...".format(interval))
-        while True:
+        while not self._shutdown_event.is_set():
             try:
                 self.run_once(data_types)
                 self.logger.info(
-                    "Sleeping for {0} seconds...".format(interval))
-                time.sleep(interval)
-            except KeyboardInterrupt:
-                self.logger.info("Received shutdown signal, exiting...")
-                break
+                    "Sleeping for {0} seconds (Ctrl+C to stop)...".format(interval))
+                # Use event wait instead of sleep for responsive shutdown
+                if self._shutdown_event.wait(timeout=interval):
+                    self.logger.info("Shutdown event received during sleep")
+                    break
             except Exception as e:
                 self.logger.error(
                     "Error in daemon loop: {0}".format(
                         str(e)), exc_info=True)
                 self.logger.info(
                     "Waiting {0} seconds before retry...".format(interval))
-                time.sleep(interval)
+                if self._shutdown_event.wait(timeout=interval):
+                    break
+
+        self.logger.info("Daemon mode exiting, performing cleanup...")
+        self._graceful_shutdown()
+
+    def _graceful_shutdown(self):
+        """Perform graceful shutdown: flush checkpoints and log final metrics."""
+        self.logger.info("Initiating graceful shutdown...")
+        try:
+            # Flush all pending checkpoints
+            self.checkpoint.flush_all()
+            self.logger.info("Checkpoints flushed successfully")
+        except Exception as e:
+            self.logger.error("Error flushing checkpoints: {0}".format(e))
+
+        try:
+            # Flush any pending HEC events
+            self.cribl.flush()
+            self.logger.info("HEC buffer flushed successfully")
+        except Exception as e:
+            self.logger.error("Error flushing HEC buffer: {0}".format(e))
+
+        # Log final metrics
+        self.metrics.log_summary(self.logger, 0)
+        self.logger.info("Graceful shutdown complete")
+
+
+def _signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    sig_name = signal.Signals(signum).name
+    logging.getLogger(__name__).info(
+        "Received signal {0}, initiating graceful shutdown...".format(sig_name))
+    _shutdown_event.set()
 
 
 def main():
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+
     parser = argparse.ArgumentParser(
         description='Tenable to Cribl Collector',
         formatter_class=argparse.RawDescriptionHelpFormatter,
