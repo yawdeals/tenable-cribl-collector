@@ -138,7 +138,8 @@ class CriblHECHandler:
             token=token,
             http_event_server=host,
             http_event_port=str(port),
-            http_event_server_ssl=ssl_verify,
+            http_event_server_ssl=True,  # Always use HTTPS
+            ssl_verify_cert=ssl_verify,  # Whether to verify certificates
             ssl_ca_cert=ssl_ca_cert,
             index=index,
             max_retries=max_retries,

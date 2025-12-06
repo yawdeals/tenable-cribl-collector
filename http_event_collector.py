@@ -62,6 +62,7 @@ class http_event_collector:
             host="",
             http_event_port='8088',
             http_event_server_ssl=True,
+            ssl_verify_cert=True,
             ssl_ca_cert=None,
             max_bytes=1048576,
             index="",
@@ -79,7 +80,8 @@ class http_event_collector:
             http_event_server: Splunk server hostname/IP
             host: Host field for events (default: current hostname)
             http_event_port: HEC port (default: 8088)
-            http_event_server_ssl: Use SSL/TLS (default: True)
+            http_event_server_ssl: Use HTTPS (default: True)
+            ssl_verify_cert: Verify SSL certificates (default: True, set False for self-signed)
             max_bytes: Maximum batch size in bytes (default: 1MB)
             index: Default Splunk index
             max_retries: Maximum retry attempts (default: 3)
@@ -92,7 +94,8 @@ class http_event_collector:
         """
         self.token = token
         self.ssl_ca_cert = ssl_ca_cert
-        self.ssl_verify = http_event_server_ssl
+        self.ssl_verify = ssl_verify_cert  # Whether to verify certificates
+        self.use_ssl = http_event_server_ssl  # Whether to use HTTPS
         self.batchEvents = []
         self.maxByteLength = max_bytes
         self.currentByteLength = 0
@@ -127,8 +130,8 @@ class http_event_collector:
         self.error_count = 0
         self.throttle_count = 0  # Track how many times we throttled
 
-        # Set server protocol
-        if http_event_server_ssl:
+        # Set server protocol (always HTTPS for HEC unless explicitly disabled)
+        if self.use_ssl:
             protocol = 'https'
         else:
             protocol = 'http'
