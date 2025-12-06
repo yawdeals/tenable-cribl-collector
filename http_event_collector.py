@@ -150,11 +150,14 @@ class http_event_collector:
         # Logger for this module
         self.logger = logging.getLogger(__name__)
 
-        # Log JSON library being used and SSL settings
-        self.logger.debug(
-            f"HEC using JSON library: {JSON_LIBRARY} (orjson is 10x faster)")
-        self.logger.info(
-            f"HEC SSL: use_ssl={self.use_ssl}, verify_cert={self.ssl_verify}, ca_cert={self.ssl_ca_cert}")
+        # Log SSL settings prominently for troubleshooting
+        if not self.ssl_verify:
+            self.logger.warning(
+                "SSL CERTIFICATE VERIFICATION DISABLED - connecting to %s without cert validation",
+                self.server_uri)
+        else:
+            self.logger.info(
+                f"HEC SSL: verify_cert={self.ssl_verify}, ca_cert={self.ssl_ca_cert}")
 
         # Create persistent session with connection pooling and retry logic
         self._session = self._create_session()
