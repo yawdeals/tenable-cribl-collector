@@ -56,7 +56,7 @@ class VulnerabilityFeedProcessor(BaseFeedProcessor):
             else:
                 self.logger.info("Full export (no previous checkpoint)")
 
-            latest_timestamp = last_timestamp or 0
+            latest_timestamp = int(last_timestamp or 0)
             current_time = int(time.time())
 
             for vuln in _safe_export_with_retry(

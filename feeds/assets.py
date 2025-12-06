@@ -109,7 +109,7 @@ class AssetFeedProcessor(BaseFeedProcessor):
             else:
                 self.logger.info("Full export (no previous checkpoint)")
 
-            latest_timestamp = last_timestamp or 0
+            latest_timestamp = int(last_timestamp or 0)
 
             for asset in _safe_export_with_retry(
                 lambda: self.tenable.exports.assets(**export_kwargs),
@@ -120,7 +120,8 @@ class AssetFeedProcessor(BaseFeedProcessor):
                     continue
 
                 # Track latest update timestamp for next incremental run
-                asset_updated = asset.get('updated_at', 0)
+                # Ensure int comparison (API may return string)
+                asset_updated = int(asset.get('updated_at') or 0)
                 if asset_updated and asset_updated > latest_timestamp:
                     latest_timestamp = asset_updated
 

@@ -161,12 +161,15 @@ class FileCheckpoint:
         with self._lock:
             self._load_checkpoint(key)
             # Return 0 if no timestamp to allow numeric comparisons
-            return self._cache[key].get('last_timestamp') or 0
+            # Ensure we always return an int (checkpoint file may have string)
+            val = self._cache[key].get('last_timestamp') or 0
+            return int(val) if val else 0
 
     def set_last_timestamp(self, key, timestamp):
         with self._lock:
             self._load_checkpoint(key)
-            self._cache[key]['last_timestamp'] = timestamp
+            # Always store as int
+            self._cache[key]['last_timestamp'] = int(timestamp)
             self._dirty_keys.add(key)
         # Timestamps are important - flush immediately
         self.flush(key)
