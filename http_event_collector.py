@@ -145,13 +145,16 @@ class http_event_collector:
         self.logger = logging.getLogger(__name__)
 
         # Log SSL settings prominently for troubleshooting
-        if not self.ssl_verify:
+        if self.ssl_ca_cert:
+            self.logger.info(
+                "HEC SSL: Using CA cert: %s", self.ssl_ca_cert)
+        elif self.ssl_verify:
+            self.logger.info(
+                "HEC SSL: Using system CA certificates for verification")
+        else:
             self.logger.warning(
                 "SSL CERTIFICATE VERIFICATION DISABLED - connecting to %s without cert validation",
                 self.server_uri)
-        else:
-            self.logger.info(
-                f"HEC SSL: verify_cert={self.ssl_verify}, ca_cert={self.ssl_ca_cert}")
 
         # Create persistent session with connection pooling and retry logic
         self._session = self._create_session()
