@@ -3,7 +3,35 @@
 # concurrent execution
 import time
 import logging
+from datetime import datetime
 from feeds.base import BaseFeedProcessor
+
+
+def _parse_timestamp(ts_value):
+    """Convert Tenable timestamp to unix epoch.
+    
+    Handles both ISO format strings (2025-11-30T13:15:42.022Z) and integers.
+    Returns 0 if parsing fails.
+    """
+    if not ts_value:
+        return 0
+    if isinstance(ts_value, (int, float)):
+        return int(ts_value)
+    if isinstance(ts_value, str):
+        try:
+            # Try parsing ISO format
+            # Handle both with and without microseconds
+            for fmt in ('%Y-%m-%dT%H:%M:%S.%fZ', '%Y-%m-%dT%H:%M:%SZ'):
+                try:
+                    dt = datetime.strptime(ts_value, fmt)
+                    return int(dt.timestamp())
+                except ValueError:
+                    continue
+            # If it's a numeric string, convert directly
+            return int(float(ts_value))
+        except (ValueError, TypeError):
+            return 0
+    return 0
 
 
 def _safe_export_with_retry(
@@ -120,8 +148,8 @@ class AssetFeedProcessor(BaseFeedProcessor):
                     continue
 
                 # Track latest update timestamp for next incremental run
-                # Ensure int comparison (API may return string)
-                asset_updated = int(asset.get('updated_at') or 0)
+                # Parse ISO timestamp string to unix epoch
+                asset_updated = _parse_timestamp(asset.get('updated_at'))
                 if asset_updated and asset_updated > latest_timestamp:
                     latest_timestamp = asset_updated
 
