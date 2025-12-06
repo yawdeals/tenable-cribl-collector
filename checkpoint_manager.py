@@ -150,7 +150,9 @@ class FileCheckpoint:
                         "Flushed checkpoint {}: {} IDs".format(
                             k, len(id_tracking)))
                 except Exception as e:
-                    logging.error("Error flushing checkpoint {}: {}".format(k, e))
+                    logging.error(
+                        "Error flushing checkpoint {}: {}".format(
+                            k, e))
 
     def flush_all(self):
         self.flush()
@@ -158,7 +160,8 @@ class FileCheckpoint:
     def get_last_timestamp(self, key):
         with self._lock:
             self._load_checkpoint(key)
-            return self._cache[key].get('last_timestamp')
+            # Return 0 if no timestamp to allow numeric comparisons
+            return self._cache[key].get('last_timestamp') or 0
 
     def set_last_timestamp(self, key, timestamp):
         with self._lock:

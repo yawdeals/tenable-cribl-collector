@@ -1,34 +1,54 @@
 #!/bin/bash
 # Tenable HEC Collector Runner
-# Activates virtual environment and runs the collector
+# Runs the collector using Python 3.11 (no virtual environment)
+
+set -euo pipefail
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Virtual environment path (change if different)
-VENV_PATH="${SCRIPT_DIR}/venv"
+# ============================================
+# CRIBL_HOME CONFIGURATION
+# Set this if using CRIBL_HEC_CA_CERT with $CRIBL_HOME
+# ============================================
+export CRIBL_HOME=/opt/cribl
 
-# Check if venv exists
-if [ ! -d "$VENV_PATH" ]; then
-    echo "ERROR: Virtual environment not found at $VENV_PATH"
-    echo "Create it with: python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
+# ============================================
+# PROXY CONFIGURATION
+# Add hostnames/IPs that should bypass proxy
+# ============================================
+export no_proxy="localhost,127.0.0.1,.company.com,cribl-server.company.com,cloud.tenable.com"
+export NO_PROXY="localhost,127.0.0.1,.company.com,cribl-server.company.com,cloud.tenable.com"
+
+# Python executable (use python3.11 explicitly)
+PYTHON_CMD="python3.11"
+
+# Check if Python 3.11 is available
+if ! command -v "$PYTHON_CMD" &> /dev/null; then
+    echo "ERROR: $PYTHON_CMD not found"
+    echo "Install Python 3.11 or update PYTHON_CMD in this script"
     exit 1
 fi
 
-# Activate virtual environment
-source "${VENV_PATH}/bin/activate"
+# Verify Python version is 3.10+
+PYTHON_VERSION=$("$PYTHON_CMD" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+echo "Using Python $PYTHON_VERSION"
 
-# Create logs directory if needed
-mkdir -p logs
+# Create logs and checkpoints directories if needed
+mkdir -p logs checkpoints
+
+# Production optimizations via environment
+export PYTHONUNBUFFERED=1        # Disable output buffering
+export PYTHONDONTWRITEBYTECODE=1 # Faster startup, no .pyc files
 
 # Run the collector
-python3 tenable_collector.py "$@"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting Tenable collector..."
+"$PYTHON_CMD" tenable_collector.py "$@"
 
 # Capture exit code
 EXIT_CODE=$?
 
-# Deactivate venv
-deactivate 2>/dev/null
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Collector finished with exit code $EXIT_CODE"
 
 exit $EXIT_CODE

@@ -59,13 +59,13 @@ class BaseFeedProcessor(object):
         self._hec_sent_count = 0
         self.logger.info("Starting {0} feed...".format(self.feed_name))
 
-    def log_progress(self, count, interval=5000):
-        # Log every 5000 events instead of 1000 to reduce overhead
+    def log_progress(self, count, interval=10000):
+        # Log every 10000 events to reduce logging overhead in production
         if count > 0 and count % interval == 0:
             elapsed = time.time() - self._start_time
             rate = count / elapsed if elapsed > 0 else 0
             self.logger.info(
-                "  [{0}] {1:,} events processed ({2:.0f}/sec)".format(
+                "  [{0}] {1:,} events ({2:.0f}/sec)".format(
                     self.feed_name, count, rate))
 
     def should_stop(self, count):

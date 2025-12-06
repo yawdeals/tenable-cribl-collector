@@ -9,9 +9,12 @@ from feeds.base import BaseFeedProcessor
 def _safe_export_with_retry(
         export_func,
         feed_name,
-        max_retries=3,
-        initial_wait=60):
+        max_retries=5,
+        initial_wait=120):
     # Retry wrapper for Tenable exports with exponential backoff for 429 errors
+    # CRITICAL: Tenable only allows 1 export per type at a time
+    # If we get a 429, we wait and retry - this should be RARE with proper
+    # inter-feed delays
     logger = logging.getLogger(__name__)
     wait_time = initial_wait
 
@@ -37,21 +40,21 @@ def _safe_export_with_retry(
                 if '429' in error_msg or 'duplicate export' in error_msg or 'export already running' in error_msg:
                     if attempt < max_retries:
                         logger.warning(
-                            "Export already running or rate limited (429). "
-                            "Waiting {0} seconds for existing export to complete... "
+                            "429 RATE LIMIT: Export already running on Tenable's side. "
+                            "Waiting {0} seconds for it to complete... "
                             "(Attempt {1}/{2})".format(wait_time, attempt + 1, max_retries + 1))
                         logger.info(
-                            "TIP: If you cancelled a previous run, Tenable's export may still be processing. "
-                            "This can take 10-30 minutes to complete on Tenable's side.")
+                            "NOTE: This is normal if a previous export is still processing. "
+                            "Tenable exports can take 10-30 minutes to fully release.")
 
                         time.sleep(wait_time)
-                        # Exponential backoff (max 5 min)
-                        wait_time = min(wait_time * 1.5, 300)
+                        # Exponential backoff (max 10 min)
+                        wait_time = min(wait_time * 1.5, 600)
                         continue
                     else:
                         logger.error(
                             "Max retries exceeded. An export is still running on Tenable's side. "
-                            "Please wait 30-60 minutes and try again, or contact Tenable support.")
+                            "Please wait 30-60 minutes and try again.")
                         raise
 
             # For other errors or if export already started, raise immediately
@@ -81,18 +84,45 @@ class AssetFeedProcessor(BaseFeedProcessor):
         event_count = 0
 
         try:
+            # Get last processed timestamp for incremental export
+            last_timestamp = self.get_last_timestamp()
+
             self.logger.info("Initiating asset export from Tenable.io...")
             self.logger.info(
                 "(This may take several minutes for large environments)")
 
-            # Use is_deleted=False to differentiate from deleted asset export
+            # Optimized export parameters per Tenable recommendations:
+            # - chunk_size=4000 (Tenable recommended for assets)
+            # - since filter for incremental updates
+            # - timeout=3600 (1 hour max wait for export to complete)
+            export_kwargs = {
+                'chunk_size': 4000,
+                'timeout': 3600,
+                'is_deleted': False
+            }
+
+            # Use 'since' filter for incremental export if we have a checkpoint
+            if last_timestamp and last_timestamp > 0:
+                export_kwargs['updated_at'] = int(last_timestamp)
+                self.logger.info(
+                    "Incremental export since: {0}".format(last_timestamp))
+            else:
+                self.logger.info("Full export (no previous checkpoint)")
+
+            latest_timestamp = last_timestamp or 0
+
             for asset in _safe_export_with_retry(
-                lambda: self.tenable.exports.assets(is_deleted=False),
+                lambda: self.tenable.exports.assets(**export_kwargs),
                 "Asset Inventory"
             ):
                 asset_id = asset.get('id')
                 if self.is_processed(asset_id):
                     continue
+
+                # Track latest update timestamp for next incremental run
+                asset_updated = asset.get('updated_at', 0)
+                if asset_updated and asset_updated > latest_timestamp:
+                    latest_timestamp = asset_updated
 
                 if self.send_event(asset, item_id=asset_id):
                     event_count += 1
@@ -104,6 +134,12 @@ class AssetFeedProcessor(BaseFeedProcessor):
 
             # Flush any remaining events
             self.flush_events()
+
+            # Save latest timestamp for next incremental run
+            if latest_timestamp > (last_timestamp or 0):
+                self.set_last_timestamp(latest_timestamp)
+                self.logger.info(
+                    "Updated checkpoint timestamp: {0}".format(latest_timestamp))
 
             self.log_completion(event_count)
         except Exception as e:
@@ -136,12 +172,28 @@ class AssetSelfScanProcessor(BaseFeedProcessor):
         event_count = 0
 
         try:
+            last_timestamp = self.get_last_timestamp()
+
             self.logger.info("Initiating agent-based asset export...")
-            # Note: Tenable API doesn't have has_agent filter, so we use sources filter
-            # to differentiate this export from others (agents typically show
-            # as 'NESSUS_AGENT')
+
+            # Optimized export parameters per Tenable recommendations
+            export_kwargs = {
+                'sources': ['NESSUS_AGENT'],  # Only agent-scanned assets
+                'chunk_size': 4000,  # Tenable recommends 2000-5000
+                'timeout': 3600,  # 1 hour max wait
+                'include_unlicensed': True
+            }
+
+            # Use updated_at filter for incremental export
+            if last_timestamp and last_timestamp > 0:
+                export_kwargs['updated_at'] = int(last_timestamp)
+                self.logger.info(
+                    "Incremental export since: {0}".format(last_timestamp))
+
+            current_time = int(time.time())
+
             for asset in _safe_export_with_retry(
-                lambda: self.tenable.exports.assets(sources=['NESSUS_AGENT']),
+                lambda: self.tenable.exports.assets(**export_kwargs),
                 "Agent-Based Assets"
             ):
                 # Double-check has_agent flag (some agents may have different
@@ -161,6 +213,11 @@ class AssetSelfScanProcessor(BaseFeedProcessor):
                     break
 
             self.flush_events()
+
+            # Update timestamp for next incremental run
+            if event_count > 0 or not last_timestamp:
+                self.set_last_timestamp(current_time)
+
             self.log_completion(event_count)
         except Exception as e:
             self.logger.error(
@@ -237,10 +294,17 @@ class DeletedAssetProcessor(BaseFeedProcessor):
 
             asset_count = 0
             start_time = time.time()
-            # Use has_plugin_results=True to differentiate from other asset exports
-            # and focus on assets that have actually been scanned
+
+            # Optimized export parameters for full scan
+            export_kwargs = {
+                'has_plugin_results': True,  # Only assets that have been scanned
+                'chunk_size': 4000,  # Tenable recommends 2000-5000
+                'timeout': 3600,  # 1 hour max wait
+                'include_unlicensed': True
+            }
+
             for asset in _safe_export_with_retry(
-                lambda: self.tenable.exports.assets(has_plugin_results=True),
+                lambda: self.tenable.exports.assets(**export_kwargs),
                 "Deleted Assets"
             ):
                 current_assets.add(asset.get('id'))
@@ -326,11 +390,28 @@ class TerminatedAssetProcessor(BaseFeedProcessor):
         event_count = 0
 
         try:
+            last_timestamp = self.get_last_timestamp()
+
             self.logger.info("Initiating terminated asset export...")
-            # Use is_terminated=True filter to get only terminated assets
-            # This makes the export unique and returns only relevant data
+
+            # Optimized export parameters per Tenable recommendations
+            export_kwargs = {
+                'is_terminated': True,  # Only terminated assets
+                'chunk_size': 4000,  # Tenable recommends 2000-5000
+                'timeout': 3600,  # 1 hour max wait
+                'include_unlicensed': True
+            }
+
+            # Use updated_at filter for incremental export
+            if last_timestamp and last_timestamp > 0:
+                export_kwargs['updated_at'] = int(last_timestamp)
+                self.logger.info(
+                    "Incremental export since: {0}".format(last_timestamp))
+
+            current_time = int(time.time())
+
             for asset in _safe_export_with_retry(
-                lambda: self.tenable.exports.assets(is_terminated=True),
+                lambda: self.tenable.exports.assets(**export_kwargs),
                 "Terminated Assets"
             ):
                 if 'terminated_at' not in asset or asset.get(
@@ -349,6 +430,10 @@ class TerminatedAssetProcessor(BaseFeedProcessor):
                     break
 
             self.flush_events()
+
+            # Update timestamp for next incremental run
+            if event_count > 0 or not last_timestamp:
+                self.set_last_timestamp(current_time)
 
             self.log_completion(event_count)
         except Exception as e:

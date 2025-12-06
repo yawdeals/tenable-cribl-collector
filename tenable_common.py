@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Tenable to Cribl collector - Common utilities
 import os
 import sys
@@ -33,7 +33,8 @@ def validate_environment():
         for var_name, description in missing:
             error_lines.append("  - {0}: {1}".format(var_name, description))
         error_lines.append("")
-        error_lines.append("Set these in your .env file or export them as environment variables.")
+        error_lines.append(
+            "Set these in your .env file or export them as environment variables.")
         raise EnvironmentError('\n'.join(error_lines))
 
 
@@ -106,7 +107,9 @@ class CollectorMetrics:
         summary = self.get_summary()
         logger.info("-" * 40)
         logger.info("METRICS SUMMARY:")
-        logger.info("  Feeds processed: {0}".format(summary['feeds_processed']))
+        logger.info(
+            "  Feeds processed: {0}".format(
+                summary['feeds_processed']))
         logger.info("  Total events: {0}".format(summary['total_events']))
         logger.info("  Total errors: {0}".format(summary['total_errors']))
         logger.info("  HEC retries: {0}".format(summary['hec_retries']))
@@ -119,48 +122,62 @@ class CollectorMetrics:
 
 class CriblHECHandler:
     # Handles sending events to Cribl via HTTP Event Collector
+    # Thread-safe for concurrent feed processing
 
     def __init__(self, host, port, token, index,
                  sourcetype, source, ssl_verify=True,
+                 ssl_ca_cert=None,
                  max_retries=None, backoff_factor=None,
-                 pool_connections=None, pool_maxsize=None):
+                 pool_connections=None, pool_maxsize=None,
+                 batch_delay=None, request_timeout=None):
+        # Thread lock for safe concurrent access
+        self._lock = threading.Lock()
+
         # Initialize HEC client with connection parameters
         self.hec_handler = hec.http_event_collector(
             token=token,
             http_event_server=host,
             http_event_port=str(port),
             http_event_server_ssl=ssl_verify,
+            ssl_ca_cert=ssl_ca_cert,
             index=index,
             max_retries=max_retries,
             backoff_factor=backoff_factor,
             pool_connections=pool_connections,
-            pool_maxsize=pool_maxsize
+            pool_maxsize=pool_maxsize,
+            batch_delay=batch_delay,
+            request_timeout=request_timeout
         )
         self.sourcetype = sourcetype
         self.source = source
         self.index = index
-        logging.info("Initialized Cribl HEC: {0}:{1}".format(host, port))
+        ssl_info = "CA: {}".format(
+            ssl_ca_cert) if ssl_ca_cert else "SSL: {}".format(ssl_verify)
+        logging.info(
+            "Initialized Cribl HEC: {0}:{1} ({2})".format(
+                host, port, ssl_info))
 
     def send_event(self, event_data, timestamp=None,
                    sourcetype=None, source=None):
-        # Send a single event to Cribl HEC
-        try:
-            # Build HEC payload with event data and metadata
-            payload = {}
-            payload['event'] = event_data
-            payload['sourcetype'] = sourcetype or self.sourcetype
-            payload['source'] = source or self.source
-            payload['index'] = self.index
+        # Send a single event to Cribl HEC (thread-safe)
+        with self._lock:
+            try:
+                # Build HEC payload with event data and metadata
+                payload = {}
+                payload['event'] = event_data
+                payload['sourcetype'] = sourcetype or self.sourcetype
+                payload['source'] = source or self.source
+                payload['index'] = self.index
 
-            # Add timestamp if provided
-            if timestamp:
-                payload['time'] = timestamp
+                # Add timestamp if provided
+                if timestamp:
+                    payload['time'] = timestamp
 
-            self.hec_handler.sendEvent(payload)
-            return True
-        except Exception as e:
-            logging.error("Failed to send event to Cribl: {0}".format(e))
-            return False
+                self.hec_handler.sendEvent(payload)
+                return True
+            except Exception as e:
+                logging.error("Failed to send event to Cribl: {0}".format(e))
+                return False
 
     def send_batch(
             self,
@@ -169,53 +186,55 @@ class CriblHECHandler:
             feed_type=None,
             feed_name=None):
         # Send multiple events in batch mode for better performance
+        # (thread-safe)
         if not events:
             return 0
 
-        success_count = 0
-        batch_sourcetype = sourcetype or self.sourcetype
+        with self._lock:
+            success_count = 0
+            batch_sourcetype = sourcetype or self.sourcetype
 
-        # Add each event to the batch buffer
-        for event in events:
+            # Add each event to the batch buffer
+            for event in events:
+                try:
+                    # Build HEC payload
+                    payload = {}
+                    payload['event'] = event
+                    payload['sourcetype'] = batch_sourcetype
+                    payload['source'] = self.source
+                    payload['index'] = self.index
+
+                    # Add feed classification as HEC fields for easy filtering
+                    if feed_type:
+                        payload['fields'] = {
+                            'feed_type': feed_type,
+                            'feed_name': feed_name or ''
+                        }
+
+                    self.hec_handler.sendEvent(payload)
+                    success_count += 1
+                except Exception as e:
+                    logging.error(
+                        "Failed to add event to batch: {0}".format(e))
+
+            # Flush the batch to send all buffered events
             try:
-                # Build HEC payload
-                payload = {}
-                payload['event'] = event
-                payload['sourcetype'] = batch_sourcetype
-                payload['source'] = self.source
-                payload['index'] = self.index
-
-                # Add feed classification as HEC fields for easy filtering
-                if feed_type:
-                    payload['fields'] = {
-                        'feed_type': feed_type,
-                        'feed_name': feed_name or ''
-                    }
-
-                self.hec_handler.sendEvent(payload)
-                success_count += 1
+                self.hec_handler.flushBatch()
+                logging.info(
+                    "HEC batch sent: {0} events | feed_type={1} | feed_name={2}".format(
+                        success_count, feed_type or 'n/a', feed_name or 'n/a'))
             except Exception as e:
-                logging.error("Failed to add event to batch: {0}".format(e))
+                logging.error("Error flushing batch: {0}".format(e))
 
-        # Flush the batch to send all buffered events
-        try:
-            self.hec_handler.flushBatch()
-            logging.info(
-                "HEC batch sent: {0} events | feed_type={1} | feed_name={2}".format(
-                    success_count,
-                    feed_type or 'n/a',
-                    feed_name or 'n/a'))
-        except Exception as e:
-            logging.error("Error flushing batch: {0}".format(e))
-
-        return success_count
+            return success_count
 
     def flush(self):
-        """Flush any pending events in the HEC buffer."""
-        try:
-            self.hec_handler.flushBatch()
-        except Exception as e:
-            logging.error("Error flushing HEC batch: {0}".format(e))
+        """Flush any pending events in the HEC buffer (thread-safe)."""
+        with self._lock:
+            try:
+                self.hec_handler.flushBatch()
+            except Exception as e:
+                logging.error("Error flushing HEC batch: {0}".format(e))
 
 
 def setup_logging(log_level='INFO', log_file='tenable_integration.log'):

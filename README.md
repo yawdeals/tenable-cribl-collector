@@ -1,253 +1,346 @@
-# Tenable to Cribl Collector
+# Tenable to Cribl HEC Collector
 
-Collects security data from Tenable.io and sends it to Cribl via HTTP Event Collector (HEC).
+A production-ready Python 3.11 script that collects security data from Tenable.io and sends it to Cribl via HTTP Event Collector (HEC).
 
-## Features
+## Architecture Overview
 
-- **10 Feed Types**: Assets, Vulnerabilities, Plugins, Compliance, and more
-- **Feed Classification**: Each event includes `_tenable_feed` metadata for easy filtering
-- **High Volume**: Batch processing (configurable, default 10,000 events per batch)
-- **Event Limits**: Configurable max events per feed for large environments
-- **Checkpointing**: Tracks processed IDs to avoid duplicates
-- **Overlap Prevention**: Process lock prevents concurrent runs
-- **Disk Protection**: Auto-cleanup of old checkpoint data
-- **venv Support**: Works with virtual environments for restricted users
+```
++------------------+         +----------------------+         +------------------+
+|                  |         |                      |         |                  |
+|   Tenable.io     |  API    |  Tenable Collector   |   HEC   |   Cribl Stream   |
+|   Cloud API      +-------->+  (Python 3.11)       +-------->+   / Splunk       |
+|                  |         |                      |         |                  |
++------------------+         +----------+-----------+         +------------------+
+                                        |
+                                        v
+                             +----------+-----------+
+                             |     Checkpoints      |
+                             |   (File-based)       |
+                             +----------------------+
+```
+
+## Data Flow Diagram
+
+```
+                           START
+                             |
+                             v
+                    +--------+--------+
+                    | Load .env config |
+                    | Initialize APIs  |
+                    +--------+--------+
+                             |
+                             v
+              +--------------+--------------+
+              |     Smart Feed Grouping     |
+              |   (3 parallel groups)       |
+              +--------------+--------------+
+                             |
+         +-------------------+-------------------+
+         |                   |                   |
+         v                   v                   v
+   +-----------+       +-----------+       +-----------+
+   |  Assets   |       |   Vulns   |       |  Plugins  |
+   |  Group    |       |   Group   |       |  Group    |
+   +-----------+       +-----------+       +-----------+
+         |                   |                   |
+   (sequential)        (sequential)        (sequential)
+         |                   |                   |
+         v                   v                   v
+   +-----+-----+       +-----+-----+       +-----+-----+
+   | Export 1  |       | Export 1  |       | REST API  |
+   | wait 60s  |       | wait 60s  |       | calls     |
+   | Export 2  |       | Export 2  |       +-----+-----+
+   | wait 60s  |       | wait 60s  |             |
+   | Export 3  |       | Export 3  |             |
+   | wait 60s  |       | wait 60s  |             |
+   | Export 4  |       | Export 4  |             |
+   +-----+-----+       +-----+-----+             |
+         |                   |                   |
+         +-------------------+-------------------+
+                             |
+                             v
+                    +--------+--------+
+                    | Flush checkpoints|
+                    | Log summary      |
+                    +--------+--------+
+                             |
+                             v
+                            END
+```
+
+## Feed Processing Pipeline
+
+```
+For each feed:
+
+  +------------------+
+  | Start Feed       |
+  +--------+---------+
+           |
+           v
+  +--------+---------+
+  | Check checkpoint |
+  | Get last run     |
+  +--------+---------+
+           |
+           v
+  +--------+---------+
+  | Call Tenable API |
+  | (Export or REST) |
+  +--------+---------+
+           |
+           v
+  +--------+---------+
+  | For each record: |
+  +--------+---------+
+           |
+     +-----+-----+
+     |           |
+     v           v
+  +--+--+     +--+--+
+  | New |     | Dup |
+  +--+--+     +--+--+
+     |           |
+     v           |
+  +--+-------+   |
+  | Add to   |   |
+  | batch    |   |
+  | buffer   |   |
+  +--+-------+   |
+     |           |
+     v           |
+  +--+-------+   |
+  | Batch    |   |
+  | full?    |   |
+  +--+---+---+   |
+     |   |       |
+    Yes  No      |
+     |   |       |
+     v   +-------+
+  +--+-------+
+  | Send to  |
+  | Cribl HEC|
+  | (gzip)   |
+  +--+-------+
+     |
+     v
+  +--+-------+
+  | Update   |
+  | checkpoint|
+  +--+-------+
+     |
+     v
+  +--+-------+
+  | Log      |
+  | progress |
+  +----------+
+```
+
+## HEC Batch Processing with Adaptive Rate Limiting
+
+```
+                    +------------------+
+                    | Events buffered  |
+                    | (batch_size=5000)|
+                    +--------+---------+
+                             |
+                             v
+                    +--------+---------+
+                    | Compress with    |
+                    | gzip (10x smaller)|
+                    +--------+---------+
+                             |
+                             v
+                    +--------+---------+
+                    | POST to HEC      |
+                    | endpoint         |
+                    +--------+---------+
+                             |
+              +--------------+--------------+
+              |              |              |
+              v              v              v
+         +----+----+    +----+----+    +----+----+
+         | 200 OK  |    |   429   |    | Timeout |
+         +---------+    | or 503  |    +---------+
+              |              |              |
+              v              v              v
+         +----+----+    +----+----+    +----+----+
+         | Speed up|    | Slow    |    | Slow    |
+         | (0.9x)  |    | down 2x |    | down 2x |
+         +---------+    +---------+    +---------+
+              |              |              |
+              +-------+------+------+------+
+                      |
+                      v
+               +------+------+
+               | Next batch  |
+               +-------------+
+```
+
+## Checkpoint System
+
+```
+checkpoints/
+    |
+    +-- tenable_asset.json
+    |       |
+    |       +-- processed_ids: [id1, id2, id3, ...]
+    |       +-- last_timestamp: 1733500000
+    |
+    +-- tenable_vulnerability.json
+    |       |
+    |       +-- processed_ids: [key1, key2, ...]
+    |       +-- last_timestamp: 1733500000
+    |
+    +-- tenable_plugin.json
+    |       |
+    |       +-- processed_ids: [plugin1, plugin2, ...]
+    |
+    +-- ... (one file per feed)
+
+Purpose:
+  - Prevents duplicate events on subsequent runs
+  - Enables incremental exports (only new data)
+  - Auto-cleanup after CHECKPOINT_RETENTION_DAYS
+```
 
 ## Quick Start
 
-### 1. Create Virtual Environment (Required for restricted users)
+### 1. Install Requirements
 
 ```bash
 cd /path/to/tenable-cribl-collector
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-deactivate
+pip3.11 install -r requirements.txt
 ```
 
 ### 2. Configure Environment
-
-Copy the example and edit with your values:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` with your values:
 
 ```bash
-# Tenable.io API (Required)
-TENABLE_ACCESS_KEY=your_access_key_here
-TENABLE_SECRET_KEY=your_secret_key_here
+# Required - Tenable.io API
+TENABLE_ACCESS_KEY=your_access_key
+TENABLE_SECRET_KEY=your_secret_key
 
-# Cribl HEC (Required)
-CRIBL_HEC_HOST=192.168.14.45
+# Required - Cribl HEC
+CRIBL_HEC_HOST=cribl-server.company.com
 CRIBL_HEC_PORT=8088
-CRIBL_HEC_TOKEN=your_hec_token_here
-
-# Optional Settings
-HEC_BATCH_SIZE=10000              # Events per HEC batch
-MAX_EVENTS_PER_FEED=0             # 0=unlimited, or set limit (e.g., 50000)
-CHECKPOINT_MAX_IDS=100000         # Max IDs per checkpoint file
-CHECKPOINT_RETENTION_DAYS=30      # Days to keep checkpoint data
-DELETED_ASSET_SCAN_INTERVAL_HOURS=24  # How often to scan for deleted assets (default: 24)
+CRIBL_HEC_TOKEN=your_hec_token
 ```
 
 ### 3. Run the Collector
 
-**Option A: Using wrapper script (recommended for venv)**
+```bash
+# Run all feeds
+./run_tenable.sh --feed all
+
+# Run specific feeds
+./run_tenable.sh --feed tenableio_asset tenableio_vulnerability
+
+# Run in daemon mode (continuous every 6 hours)
+./run_tenable.sh --feed all --daemon --interval 21600
+```
+
+## Command Reference
+
+```
+Usage: ./run_tenable.sh [OPTIONS]
+
+Options:
+  --feed FEED [FEED ...]    Feeds to collect (required)
+  --daemon                  Run continuously
+  --interval SECONDS        Sleep between runs in daemon mode (default: 3600)
+  --help                    Show help message
+
+Feed Options:
+  all                              All feeds
+  tenableio_asset                  Asset inventory
+  tenableio_asset_self_scan        Agent-based assets
+  tenableio_deleted_asset          Deleted assets
+  tenableio_terminated_asset       Terminated assets
+  tenableio_vulnerability          Vulnerabilities (medium, high, critical)
+  tenableio_vulnerability_no_info  Informational vulnerabilities
+  tenableio_vulnerability_self_scan Agent-based vulnerabilities
+  tenableio_fixed_vulnerability    Fixed vulnerabilities
+  tenableio_plugin                 Plugin metadata
+  tenableio_compliance             Compliance findings
+```
+
+## Examples
+
+### Collect All Data (First Run)
+
 ```bash
 ./run_tenable.sh --feed all
 ```
 
-**Option B: Direct execution (if packages installed globally)**
-```bash
-python3 tenable_collector.py --feed all
+Output:
+```
+Using Python 3.11
+[2025-12-06 14:00:00] Starting Tenable collector...
+================================================================================
+STARTING TENABLE TO CRIBL INTEGRATION
+================================================================================
+Selected feeds: all
+Batch size: 5000 events
+Execution mode: SMART GROUPING (parallel groups, sequential within)
+================================================================================
+[assets] Processing feed 1/4: tenableio_asset
+  [Asset Inventory] 10,000 events (500/sec)
+  [Asset Inventory] 20,000 events (520/sec)
+  Completed Asset Inventory: 25,432 events processed, 25,432 sent to HEC in 0.8min
+[assets] Waiting 60s for Tenable export lock to release...
+...
+================================================================================
+COLLECTION COMPLETE
+================================================================================
+Total events: 142,567
+Total time: 12.5 minutes
+HEC throughput: 190 events/sec
+================================================================================
+[2025-12-06 14:12:30] Collector finished with exit code 0
 ```
 
-## Command Line Options
+### Collect Specific Feeds
 
 ```bash
-# Collect all feeds
-python3 tenable_collector.py --feed all
+# Only assets
+./run_tenable.sh --feed tenableio_asset
 
-# Collect specific feeds
-python3 tenable_collector.py --feed tenableio_asset tenableio_vulnerability
-
-# Run in daemon mode (continuous)
-python3 tenable_collector.py --feed all --daemon --interval 3600
-
-# Available feed options:
-#   all                              - All feeds
-#   tenableio_asset                  - Asset inventory
-#   tenableio_asset_self_scan        - Agent-based assets
-#   tenableio_deleted_asset          - Deleted assets
-#   tenableio_terminated_asset       - Terminated assets
-#   tenableio_vulnerability          - Active vulnerabilities (medium, high, critical)
-#   tenableio_vulnerability_no_info  - Informational vulnerabilities
-#   tenableio_vulnerability_self_scan - Agent-based vulnerabilities
-#   tenableio_fixed_vulnerability    - Fixed vulnerabilities
-#   tenableio_plugin                 - Plugin metadata
-#   tenableio_compliance             - Compliance findings
+# Assets and vulnerabilities
+./run_tenable.sh --feed tenableio_asset tenableio_vulnerability
 ```
 
-## Scheduling
+### Daemon Mode (Background)
 
-### Option 1: Using Cron (Recommended)
-
-**Daily run at 2 AM:**
 ```bash
+# Run every 6 hours in background
+nohup ./run_tenable.sh --feed all --daemon --interval 21600 > logs/daemon.log 2>&1 &
+
+# Check if running
+ps aux | grep tenable_collector
+
+# Stop daemon
+pkill -f tenable_collector
+```
+
+### Schedule with Cron
+
+```bash
+# Edit crontab
 crontab -e
-```
 
-Add:
-```cron
+# Add: Run daily at 2 AM
 0 2 * * * cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed all >> logs/cron.log 2>&1
-```
 
-**Why daily?**
-- First run: Backfills all historical data (may take hours)
-- Subsequent runs: Only collects new/changed data via checkpoints (fast)
-- The process lock prevents overlapping runs if one takes longer than 24 hours
-
-**Alternative schedules:**
-```cron
-# Every 6 hours
+# Add: Run every 6 hours
 0 */6 * * * cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed all >> logs/cron.log 2>&1
-
-# Staggered feeds (for very large environments)
-0 1 * * * cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed tenableio_asset >> logs/cron.log 2>&1
-0 3 * * * cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed tenableio_vulnerability >> logs/cron.log 2>&1
-0 5 * * 0 cd /path/to/tenable-cribl-collector && ./run_tenable.sh --feed tenableio_plugin >> logs/cron.log 2>&1
 ```
-
-### Option 2: Using nohup (When cron access is restricted)
-
-**Run in daemon mode (continuous background execution):**
-```bash
-# Every 6 hours (21600 seconds)
-nohup /path/to/tenable-cribl-collector/run_tenable.sh --feed all --daemon --interval 21600 >> /path/to/tenable-cribl-collector/logs/daemon.log 2>&1 &
-```
-
-**Or single run in background:**
-```bash
-nohup /path/to/tenable-cribl-collector/run_tenable.sh --feed all >> /path/to/tenable-cribl-collector/logs/nohup.log 2>&1 &
-```
-
-**Check if daemon is running:**
-```bash
-ps aux | grep tenable_collector
-```
-
-**Stop daemon:**
-```bash
-# Find the process ID
-ps aux | grep tenable_collector
-
-# Kill the process
-kill <PID>
-```
-
-**View daemon logs:**
-```bash
-tail -f /path/to/tenable-cribl-collector/logs/daemon.log
-```
-
-**Auto-start on system boot (add to /etc/rc.local or systemd):**
-```bash
-# Add to /etc/rc.local (before exit 0)
-nohup /path/to/tenable-cribl-collector/run_tenable.sh --feed all --daemon --interval 21600 >> /path/to/tenable-cribl-collector/logs/daemon.log 2>&1 &
-```
-
-## Event Classification
-
-Every event sent to HEC includes a `_tenable_feed` field for easy filtering:
-
-```json
-{
-  "_tenable_feed": {
-    "feed_type": "vulnerability",
-    "feed_name": "Active Vulnerabilities"
-  },
-  ... original Tenable event data ...
-}
-```
-
-### Feed Types
-
-| Feed Name | feed_type | feed_name | Sourcetype |
-|-----------|-----------|-----------|------------|
-| `tenableio_asset` | asset | Asset Inventory | tenable:io:asset |
-| `tenableio_asset_self_scan` | asset_self_scan | Agent-Based Assets | tenable:io:asset:self_scan |
-| `tenableio_deleted_asset` | deleted_asset | Deleted Assets | tenable:io:asset:deleted |
-| `tenableio_terminated_asset` | terminated_asset | Terminated Assets | tenable:io:asset:terminated |
-| `tenableio_vulnerability` | vulnerability | Active Vulnerabilities | tenable:io:vulnerability |
-| `tenableio_vulnerability_no_info` | vulnerability_info | Informational Vulnerabilities | tenable:io:vulnerability:info |
-| `tenableio_vulnerability_self_scan` | vulnerability_self_scan | Agent-Based Vulnerabilities | tenable:io:vulnerability:self_scan |
-| `tenableio_fixed_vulnerability` | fixed_vulnerability | Fixed Vulnerabilities | tenable:io:vulnerability:fixed |
-| `tenableio_plugin` | plugin | Plugin Metadata | tenable:io:plugin |
-| `tenableio_compliance` | compliance | Compliance Findings | tenable:io:compliance |
-
-## File Structure
-
-```
-tenable-cribl-collector/
-├── run_tenable.sh          # Wrapper script (activates venv)
-├── tenable_collector.py    # Main entry point
-├── tenable_common.py       # HEC handler and logging setup
-├── http_event_collector.py # HEC client
-├── checkpoint_manager.py   # Checkpoint system
-├── feeds/                  # Feed processors
-│   ├── __init__.py         # Package init
-│   ├── base.py             # Base class for all processors
-│   ├── assets.py           # Asset feeds (4 types)
-│   ├── vulnerabilities.py  # Vulnerability feeds (4 types)
-│   └── plugins.py          # Plugin & Compliance feeds
-├── venv/                   # Virtual environment (create this)
-├── checkpoints/            # Checkpoint data (auto-created)
-├── logs/                   # Log files (auto-created)
-│   ├── tenable_integration.log  # Main integration log (all feeds)
-│   ├── asset.log                # Asset Inventory feed log
-│   ├── asset_self_scan.log      # Agent-Based Assets feed log
-│   ├── compliance.log           # Compliance feed log
-│   ├── deleted_asset.log        # Deleted Assets feed log
-│   ├── fixed_vulnerability.log  # Fixed Vulnerabilities feed log
-│   ├── plugin.log               # Plugin feed log
-│   ├── terminated_asset.log     # Terminated Assets feed log
-│   ├── vulnerability.log        # Vulnerabilities feed log
-│   ├── vulnerability_no_info.log # Info-level Vulnerabilities feed log
-│   └── vulnerability_self_scan.log # Agent-based Vulnerabilities feed log
-├── .env                    # Configuration (create from .env.example)
-├── .env.example            # Example configuration
-└── requirements.txt        # Python dependencies
-```
-
-## How It Works
-
-### 1. Initialization
-- Loads configuration from `.env`
-- Connects to Tenable.io API
-- Initializes HEC handler for Cribl
-- Loads checkpoint data from previous runs
-
-### 2. Data Collection
-For each enabled feed:
-1. Query Tenable.io API for data (exports, plugins, etc.)
-2. Check each item against checkpoint (skip already processed)
-3. Add `_tenable_feed` classification metadata
-4. Batch events (default: 10,000 per batch)
-5. Send batch to Cribl HEC
-6. Update checkpoint with processed IDs
-
-### 3. Checkpointing
-- Stores processed item IDs in `checkpoints/` directory
-- Prevents duplicate event submission on subsequent runs
-- Auto-purges data older than `CHECKPOINT_RETENTION_DAYS`
-- First run collects all historical data; subsequent runs only collect new/changed items
-
-### 4. Completion
-- Logs summary of events collected per feed
-- Flushes all checkpoints to disk
 
 ## Configuration Reference
 
@@ -260,117 +353,229 @@ For each enabled feed:
 | `CRIBL_HEC_PORT` | 8088 | Cribl HEC port |
 | `CRIBL_HEC_TOKEN` | (required) | Cribl HEC authentication token |
 | `CRIBL_HEC_SSL_VERIFY` | true | Verify SSL certificates |
-| `HEC_BATCH_SIZE` | 10000 | Events per HEC batch |
+| `CRIBL_HEC_CA_CERT` | (none) | Path to CA certificate file |
+| `HEC_BATCH_SIZE` | 5000 | Events per HEC batch |
+| `HEC_BATCH_DELAY` | 0.01 | Seconds between batches (adaptive) |
+| `HEC_POOL_CONNECTIONS` | 10 | HTTP connection pool size |
 | `MAX_EVENTS_PER_FEED` | 0 | Max events per feed (0=unlimited) |
-| `MAX_CONCURRENT_FEEDS` | 0 | Concurrent feed workers (0=auto-tune, max 10) |
+| `MAX_CONCURRENT_FEEDS` | 1 | Concurrent feed workers |
+| `SMART_FEED_GROUPING` | true | Enable parallel group execution |
+| `FULLY_SEQUENTIAL` | false | Run all feeds one at a time |
+| `INTER_FEED_DELAY` | 60 | Seconds between feeds in same group |
 | `CHECKPOINT_DIR` | checkpoints | Directory for checkpoint files |
-| `CHECKPOINT_MAX_IDS` | 100000 | Max IDs per checkpoint file |
-| `CHECKPOINT_RETENTION_DAYS` | 30 | Days to keep checkpoint data |
+| `CHECKPOINT_MAX_IDS` | 500000 | Max IDs per checkpoint file |
+| `CHECKPOINT_RETENTION_DAYS` | 7 | Days to keep checkpoint data |
 | `DELETED_ASSET_SCAN_INTERVAL_HOURS` | 24 | Hours between deleted asset scans |
-| `LOG_LEVEL` | INFO | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `LOG_LEVEL` | INFO | Logging level |
+
+## Feed Groups and Execution
+
+The script uses smart grouping to maximize throughput while avoiding Tenable API rate limits:
+
+```
+Group 1: Assets (sequential, 60s delay between)
+  - tenableio_asset
+  - tenableio_asset_self_scan
+  - tenableio_deleted_asset
+  - tenableio_terminated_asset
+
+Group 2: Vulnerabilities (sequential, 60s delay between)
+  - tenableio_vulnerability
+  - tenableio_vulnerability_no_info
+  - tenableio_vulnerability_self_scan
+  - tenableio_fixed_vulnerability
+
+Group 3: Plugins (sequential)
+  - tenableio_plugin
+  - tenableio_compliance
+
+All 3 groups run IN PARALLEL.
+Feeds within each group run SEQUENTIALLY with 60-second delays.
+```
+
+## Tenable API Rate Limits and Compliance
+
+The script is designed to fully comply with Tenable.io API rate limits:
+
+```
+Tenable.io Export API Rules:
++------------------------------------------------------------------+
+|                                                                  |
+|  Asset Exports:    Only 1 active export at a time                |
+|  Vuln Exports:     Only 1 active export at a time                |
+|  Compliance:       Only 1 active export at a time                |
+|                                                                  |
+|  HOWEVER: Different export TYPES can run in parallel             |
+|           (1 asset export + 1 vuln export + REST API = OK)       |
+|                                                                  |
+|  If you start a 2nd export of the SAME TYPE:                     |
+|  --> HTTP 429 "Too Many Requests"                                |
+|  --> "Duplicate export cannot run"                               |
+|                                                                  |
++------------------------------------------------------------------+
+```
+
+### How the Script Complies
+
+```
+ALLOWED (Different types in parallel):
++------------------+     +------------------+     +------------------+
+|  Asset Export    |     |  Vuln Export     |     |  REST API Call   |
+|  (type: assets)  |     |  (type: vulns)   |     |  (plugins/scans) |
++------------------+     +------------------+     +------------------+
+        |                        |                        |
+        +-------------- RUN TOGETHER (3 streams) ---------+
+                                OK
+
+
+NOT ALLOWED (Same type in parallel):
++------------------+     +------------------+
+|  Asset Export 1  |     |  Asset Export 2  |
+|  (type: assets)  |     |  (type: assets)  |
++------------------+     +------------------+
+        |                        |
+        +---- RUN TOGETHER ------+
+               429 ERROR
+```
+
+### Compliance Verification
+
+```
+Tenable Rule                          Script Behavior                    Compliant?
+------------------------------------- ---------------------------------- ----------
+Asset Exports: 1 at a time            Group 1 runs sequentially          YES
+                                      (60s wait between each)
+
+Vuln Exports: 1 at a time             Group 2 runs sequentially          YES
+                                      (60s wait between each)
+
+REST API calls                        Group 3 runs sequentially          YES
+                                      (no export lock conflicts)
+
+Different types can run together      Groups 1, 2, 3 run in parallel     YES
+                                      (max 3 concurrent streams)
+```
+
+The 60-second delay between feeds in the same group provides safety margin to ensure Tenable fully releases the export lock on their backend before the next export starts.
+
+## Event Format
+
+Every event includes classification metadata:
+
+```json
+{
+  "_tenable_feed": {
+    "feed_type": "vulnerability",
+    "feed_name": "Active Vulnerabilities"
+  },
+  "asset": {
+    "uuid": "abc-123",
+    "hostname": "server01.example.com"
+  },
+  "plugin": {
+    "id": 12345,
+    "name": "SSL Certificate Expired"
+  },
+  "severity_id": 4,
+  "severity": "critical"
+}
+```
+
+## Sourcetypes
+
+| Feed | Sourcetype |
+|------|------------|
+| Asset Inventory | tenable:io:asset |
+| Agent-Based Assets | tenable:io:asset:self_scan |
+| Deleted Assets | tenable:io:asset:deleted |
+| Terminated Assets | tenable:io:asset:terminated |
+| Active Vulnerabilities | tenable:io:vulnerability |
+| Informational Vulnerabilities | tenable:io:vulnerability:info |
+| Agent-Based Vulnerabilities | tenable:io:vulnerability:self_scan |
+| Fixed Vulnerabilities | tenable:io:vulnerability:fixed |
+| Plugin Metadata | tenable:io:plugin |
+| Compliance Findings | tenable:io:compliance |
+
+## File Structure
+
+```
+tenable-cribl-collector/
+|-- run_tenable.sh           # Main runner script (uses Python 3.11)
+|-- tenable_collector.py     # Orchestrator
+|-- tenable_common.py        # HEC handler, logging
+|-- http_event_collector.py  # HEC client with retry/gzip
+|-- checkpoint_manager.py    # File-based checkpointing
+|-- feeds/
+|   |-- __init__.py
+|   |-- base.py              # Base processor class
+|   |-- assets.py            # 4 asset feed processors
+|   |-- vulnerabilities.py   # 4 vulnerability feed processors
+|   |-- plugins.py           # Plugin and compliance processors
+|-- checkpoints/             # Checkpoint data (auto-created)
+|-- logs/                    # Log files (auto-created)
+|-- .env                     # Configuration (create from .env.example)
+|-- .env.example             # Example configuration
+|-- requirements.txt         # Python dependencies
+```
 
 ## Logs
 
-Logs are written to both console and log files in the `logs/` directory:
-
-**Main Integration Log** (all activity):
 ```bash
+# Main log (all activity)
 tail -f logs/tenable_integration.log
-```
 
-**Per-Feed Logs** (individual feed details):
-```bash
-# Asset feed logs
+# Per-feed logs
 tail -f logs/asset.log
-tail -f logs/asset_self_scan.log
-tail -f logs/deleted_asset.log
-tail -f logs/terminated_asset.log
-
-# Vulnerability feed logs
 tail -f logs/vulnerability.log
-tail -f logs/vulnerability_no_info.log
-tail -f logs/vulnerability_self_scan.log
-tail -f logs/fixed_vulnerability.log
-
-# Plugin and compliance feed logs
 tail -f logs/plugin.log
-tail -f logs/compliance.log
-```
 
-**View all logs**:
-```bash
-# View live logs during manual run
-python3 tenable_collector.py --feed all
-
-# View all log files
+# All logs at once
 tail -f logs/*.log
-
-# View cron logs (if using cron/nohup)
-tail -f logs/cron.log
 ```
-
-**Log Organization**:
-- **tenable_integration.log**: Main orchestration logs (sequential/concurrent mode, feed queue, summary)
-- **[feed_name].log**: Feed-specific processing details (events processed, HEC sends, completion status)
-
-This separation makes it easier to troubleshoot specific feeds without sifting through all feed activity.
 
 ## Troubleshooting
 
-### Error 429 / "Duplicate export cannot run"
+### Error 429 / Rate Limit
 
-This occurs when a previous export is still running on Tenable's side. Common scenarios:
-- You cancelled the script but Tenable's export job continues (can take 10-30 minutes)
-- Another instance/tool is running an export
-- Tenable API rate limits
+The script automatically retries with exponential backoff:
+- Retry 1: Wait 120 seconds
+- Retry 2: Wait 180 seconds
+- Retry 3: Wait 270 seconds
+- Retry 4: Wait 405 seconds
+- Retry 5: Wait 607 seconds
 
-**Solution:**
-The script now automatically retries with exponential backoff:
-1. First retry: waits 5 minutes
-2. Second retry: waits 7.5 minutes  
-3. Third retry: waits 11.25 minutes
+If retries fail, wait 30 minutes and try again.
 
-If all retries fail, wait 30-60 minutes for the existing export to complete, then re-run.
+### No Events After First Run
 
-**Prevention:**
-- Each feed uses its own checkpoint file and can run independently
-- For concurrent execution, set `MAX_CONCURRENT_FEEDS=10` in `.env`
-- For large environments, increase `DELETED_ASSET_SCAN_INTERVAL_HOURS` to reduce frequency
+This is expected. The checkpoint system prevents duplicates. Only new or changed data is collected on subsequent runs. To re-collect all data:
 
-### "Authentication error" / 401 Unauthorized
-
-Verify your Tenable API keys in `.env`:
 ```bash
-TENABLE_ACCESS_KEY=your_key
-TENABLE_SECRET_KEY=your_secret
+rm -rf checkpoints/*
+./run_tenable.sh --feed all
 ```
 
 ### HEC Connection Failed
 
-1. Check Cribl HEC is enabled and listening
-2. Verify `CRIBL_HEC_HOST`, `CRIBL_HEC_PORT`, `CRIBL_HEC_TOKEN`
-3. Check firewall allows connection
-4. If using SSL, ensure `CRIBL_HEC_SSL_VERIFY` is set correctly
+1. Verify Cribl HEC is enabled and listening
+2. Check firewall allows connection to port 8088
+3. Verify token is correct
+4. Check SSL settings match your Cribl configuration
 
-### Script runs too long
+### Script Runs Too Long
 
-For large environments with millions of assets/vulnerabilities:
-1. Set `MAX_EVENTS_PER_FEED=50000` to limit events per run
-2. Schedule more frequent runs to catch up incrementally
-3. Use staggered feed collection (see cron examples above)
-
-### No events collected after first run
-
-This is expected! The checkpoint system tracks processed IDs, so subsequent runs only collect NEW or CHANGED data. Clear checkpoints to re-collect:
-```bash
-rm -rf checkpoints/*
-```
+For very large environments:
+1. Set `MAX_EVENTS_PER_FEED=100000` to limit events per run
+2. Use staggered cron schedules for different feeds
+3. Increase `HEC_BATCH_SIZE` to 10000 for faster throughput
 
 ## Requirements
 
-- Python 3.6+
-- Tenable.io API access (with appropriate permissions)
-- Cribl HEC endpoint
+- Python 3.11+
+- pytenable >= 1.9.0
+- requests >= 2.31.0
+- python-dotenv >= 1.0.0
+- orjson >= 3.9.0 (optional, 10x faster JSON)
 
 ## License
 

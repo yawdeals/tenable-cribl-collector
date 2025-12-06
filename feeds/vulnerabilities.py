@@ -28,18 +28,41 @@ class VulnerabilityFeedProcessor(BaseFeedProcessor):
         event_count = 0
 
         try:
+            # Get last processed timestamp for incremental export
+            last_timestamp = self.get_last_timestamp()
+
             self.logger.info(
                 "Initiating vulnerability export (severity: medium, high, critical)...")
             self.logger.info(
                 "(This may take several minutes for large environments)")
 
+            # Optimized export parameters per Tenable recommendations:
+            # - num_assets=2000 (Tenable recommends 1000-3000, default is only 50!)
+            # - include_unlicensed=True (capture all assets)
+            # - timeout=3600 (1 hour max wait)
+            # - since filter for incremental updates
+            export_kwargs = {
+                'severity': ['medium', 'high', 'critical'],
+                'num_assets': 2000,
+                'include_unlicensed': True,
+                'timeout': 3600
+            }
+
+            # Use 'since' filter for incremental export
+            if last_timestamp and last_timestamp > 0:
+                export_kwargs['since'] = int(last_timestamp)
+                self.logger.info(
+                    "Incremental export since: {0}".format(last_timestamp))
+            else:
+                self.logger.info("Full export (no previous checkpoint)")
+
+            latest_timestamp = last_timestamp or 0
+            current_time = int(time.time())
+
             for vuln in _safe_export_with_retry(
-                lambda: self.tenable.exports.vulns(
-                    severity=[
-                        'medium',
-                        'high',
-                        'critical']),
-                    "Active Vulnerabilities"):
+                lambda: self.tenable.exports.vulns(**export_kwargs),
+                "Active Vulnerabilities"
+            ):
                 vuln_key = "{0}_{1}_{2}_{3}".format(
                     vuln.get('asset', {}).get('uuid', 'unknown'),
                     vuln.get('plugin', {}).get('id', 'unknown'),
@@ -58,6 +81,13 @@ class VulnerabilityFeedProcessor(BaseFeedProcessor):
                     break
 
             self.flush_events()
+
+            # Update timestamp for next incremental run
+            if event_count > 0 or not last_timestamp:
+                self.set_last_timestamp(current_time)
+                self.logger.info(
+                    "Updated checkpoint timestamp: {0}".format(current_time))
+
             self.log_completion(event_count)
         except Exception as e:
             self.logger.error(
@@ -89,10 +119,28 @@ class VulnerabilityNoInfoProcessor(BaseFeedProcessor):
         event_count = 0
 
         try:
+            last_timestamp = self.get_last_timestamp()
+
             self.logger.info(
                 "Initiating informational vulnerability export (severity: info)...")
+
+            # Optimized export parameters
+            export_kwargs = {
+                'severity': ['info'],
+                'num_assets': 2000,
+                'include_unlicensed': True,
+                'timeout': 3600
+            }
+
+            if last_timestamp and last_timestamp > 0:
+                export_kwargs['since'] = int(last_timestamp)
+                self.logger.info(
+                    "Incremental export since: {0}".format(last_timestamp))
+
+            current_time = int(time.time())
+
             for vuln in _safe_export_with_retry(
-                lambda: self.tenable.exports.vulns(severity=['info']),
+                lambda: self.tenable.exports.vulns(**export_kwargs),
                 "Informational Vulnerabilities"
             ):
                 vuln_key = "{0}_{1}_{2}_{3}".format(
@@ -113,6 +161,10 @@ class VulnerabilityNoInfoProcessor(BaseFeedProcessor):
                     break
 
             self.flush_events()
+
+            if event_count > 0 or not last_timestamp:
+                self.set_last_timestamp(current_time)
+
             self.log_completion(event_count)
         except Exception as e:
             self.logger.error(
@@ -144,12 +196,27 @@ class VulnerabilitySelfScanProcessor(BaseFeedProcessor):
         event_count = 0
 
         try:
+            last_timestamp = self.get_last_timestamp()
+
             self.logger.info("Initiating agent-based vulnerability export...")
-            # Use state='OPEN' to differentiate this export from others
-            # Note: We still filter by has_agent locally since API doesn't
-            # support that filter
+
+            # Optimized export with state='OPEN' for agent-scanned vulns
+            export_kwargs = {
+                'state': 'OPEN',
+                'num_assets': 2000,
+                'include_unlicensed': True,
+                'timeout': 3600
+            }
+
+            if last_timestamp and last_timestamp > 0:
+                export_kwargs['since'] = int(last_timestamp)
+                self.logger.info(
+                    "Incremental export since: {0}".format(last_timestamp))
+
+            current_time = int(time.time())
+
             for vuln in _safe_export_with_retry(
-                lambda: self.tenable.exports.vulns(state='OPEN'),
+                lambda: self.tenable.exports.vulns(**export_kwargs),
                 "Agent-Based Vulnerabilities"
             ):
                 asset_info = vuln.get('asset', {})
@@ -174,6 +241,10 @@ class VulnerabilitySelfScanProcessor(BaseFeedProcessor):
                     break
 
             self.flush_events()
+
+            if event_count > 0 or not last_timestamp:
+                self.set_last_timestamp(current_time)
+
             self.log_completion(event_count)
         except Exception as e:
             self.logger.error(
@@ -215,10 +286,16 @@ class FixedVulnerabilityProcessor(BaseFeedProcessor):
             self.logger.info(
                 "(This may take several minutes for large environments)")
 
-            # Use num_findings=1 to differentiate from other vuln exports
-            # This returns vulns with at least 1 finding (which is all of them)
+            # Optimized export parameters
+            export_kwargs = {
+                'state': 'OPEN',
+                'num_assets': 2000,
+                'include_unlicensed': True,
+                'timeout': 3600
+            }
+
             for vuln in _safe_export_with_retry(
-                lambda: self.tenable.exports.vulns(num_findings=1),
+                lambda: self.tenable.exports.vulns(**export_kwargs),
                 "Fixed Vulnerabilities"
             ):
                 vuln_key = "{0}_{1}_{2}_{3}".format(
