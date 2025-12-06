@@ -62,7 +62,6 @@ class http_event_collector:
             host="",
             http_event_port='8088',
             http_event_server_ssl=True,
-            ssl_verify_cert=True,
             ssl_ca_cert=None,
             max_bytes=1048576,
             index="",
@@ -80,22 +79,20 @@ class http_event_collector:
             http_event_server: Splunk server hostname/IP
             host: Host field for events (default: current hostname)
             http_event_port: HEC port (default: 8088)
-            http_event_server_ssl: Use HTTPS (default: True)
-            ssl_verify_cert: Verify SSL certificates (default: True, set False for self-signed)
+            http_event_server_ssl: Use SSL/TLS and verify certs (default: True, set False for self-signed)
+            ssl_ca_cert: Path to CA certificate file for SSL verification (default: None)
             max_bytes: Maximum batch size in bytes (default: 1MB)
             index: Default Splunk index
             max_retries: Maximum retry attempts (default: 3)
             backoff_factor: Exponential backoff factor in seconds (default: 1.0)
             pool_connections: Number of connection pools (default: 5)
             pool_maxsize: Max connections per pool (default: 5)
-            ssl_ca_cert: Path to CA certificate file for SSL verification (default: None)
             batch_delay: Delay between batches in seconds (default: 0.1)
             request_timeout: Request timeout in seconds (default: 60)
         """
         self.token = token
         self.ssl_ca_cert = ssl_ca_cert
-        self.ssl_verify = ssl_verify_cert  # Whether to verify certificates
-        self.use_ssl = http_event_server_ssl  # Whether to use HTTPS
+        self.ssl_verify = http_event_server_ssl  # Controls both HTTPS and cert verification
         self.batchEvents = []
         self.maxByteLength = max_bytes
         self.currentByteLength = 0
@@ -130,11 +127,8 @@ class http_event_collector:
         self.error_count = 0
         self.throttle_count = 0  # Track how many times we throttled
 
-        # Set server protocol (always HTTPS for HEC unless explicitly disabled)
-        if self.use_ssl:
-            protocol = 'https'
-        else:
-            protocol = 'http'
+        # Always use HTTPS for HEC (ssl_verify controls certificate validation)
+        protocol = 'https'
 
         # Build server URI
         self.server_uri = f'{protocol}://{http_event_server}:{http_event_port}/services/collector/event'
