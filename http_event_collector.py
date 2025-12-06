@@ -150,19 +150,18 @@ class http_event_collector:
         # Logger for this module
         self.logger = logging.getLogger(__name__)
 
-        # Log JSON library being used
+        # Log JSON library being used and SSL settings
         self.logger.debug(
             f"HEC using JSON library: {JSON_LIBRARY} (orjson is 10x faster)")
+        self.logger.info(
+            f"HEC SSL: use_ssl={self.use_ssl}, verify_cert={self.ssl_verify}, ca_cert={self.ssl_ca_cert}")
 
         # Create persistent session with connection pooling and retry logic
-        self._session = self._create_session(http_event_server_ssl)
+        self._session = self._create_session()
 
-    def _create_session(self, ssl_enabled):
+    def _create_session(self):
         """
         Create a requests session with connection pooling and retry strategy.
-
-        Args:
-            ssl_enabled: Whether SSL is enabled (for warning suppression)
 
         Returns:
             Configured requests.Session object
@@ -189,8 +188,8 @@ class http_event_collector:
         session.mount("http://", adapter)
         session.mount("https://", adapter)
 
-        # Disable SSL warnings if not verifying
-        if not ssl_enabled:
+        # Disable SSL warnings if not verifying certificates
+        if not self.ssl_verify:
             requests.packages.urllib3.disable_warnings()
 
         return session
