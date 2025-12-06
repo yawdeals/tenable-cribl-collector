@@ -10,9 +10,9 @@ cd "$SCRIPT_DIR"
 
 # ============================================
 # CRIBL_HOME CONFIGURATION
-# Set this if using CRIBL_HEC_CA_CERT with $CRIBL_HOME
+# Only set if not already defined in environment
 # ============================================
-export CRIBL_HOME=/opt/cribl
+export CRIBL_HOME="${CRIBL_HOME:-/opt/cribl}"
 
 # ============================================
 # PROXY CONFIGURATION
