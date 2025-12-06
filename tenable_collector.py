@@ -72,10 +72,12 @@ class TenableIntegration:
             ca_cert_path = os.path.expandvars(ca_cert_raw)
             # Also expand ~ for home directory
             ca_cert_path = os.path.expanduser(ca_cert_path)
+            self.logger.info("Using CA cert: {0}".format(ca_cert_path))
             if not os.path.exists(ca_cert_path):
-                self.logger.warning(
+                self.logger.error(
+                    "CA cert file not found: {0} - check CRIBL_HEC_CA_CERT path".format(ca_cert_path))
+                raise FileNotFoundError(
                     "CA cert file not found: {0}".format(ca_cert_path))
-                ca_cert_path = None
         else:
             ca_cert_path = None
 
