@@ -181,8 +181,7 @@ class AssetSelfScanProcessor(BaseFeedProcessor):
             export_kwargs = {
                 'sources': ['NESSUS_AGENT'],  # Only agent-scanned assets
                 'chunk_size': 4000,  # Tenable recommends 2000-5000
-                'timeout': 3600,  # 1 hour max wait
-                'include_unlicensed': True
+                'timeout': 3600  # 1 hour max wait
             }
 
             # Use updated_at filter for incremental export
@@ -300,8 +299,7 @@ class DeletedAssetProcessor(BaseFeedProcessor):
             export_kwargs = {
                 'has_plugin_results': True,  # Only assets that have been scanned
                 'chunk_size': 4000,  # Tenable recommends 2000-5000
-                'timeout': 3600,  # 1 hour max wait
-                'include_unlicensed': True
+                'timeout': 3600  # 1 hour max wait
             }
 
             for asset in _safe_export_with_retry(
@@ -399,8 +397,7 @@ class TerminatedAssetProcessor(BaseFeedProcessor):
             export_kwargs = {
                 'is_terminated': True,  # Only terminated assets
                 'chunk_size': 4000,  # Tenable recommends 2000-5000
-                'timeout': 3600,  # 1 hour max wait
-                'include_unlicensed': True
+                'timeout': 3600  # 1 hour max wait
             }
 
             # Use updated_at filter for incremental export
