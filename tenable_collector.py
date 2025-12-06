@@ -67,12 +67,13 @@ class TenableIntegration:
         # Get optional CA cert path - expand environment variables like
         # $CRIBL_HOME
         ca_cert_raw = os.getenv('CRIBL_HEC_CA_CERT', '').strip()
+        self.logger.info("CRIBL_HEC_CA_CERT raw value: '{0}'".format(ca_cert_raw))
         if ca_cert_raw:
             # Expand environment variables in the path (e.g., $CRIBL_HOME)
             ca_cert_path = os.path.expandvars(ca_cert_raw)
             # Also expand ~ for home directory
             ca_cert_path = os.path.expanduser(ca_cert_path)
-            self.logger.info("Using CA cert: {0}".format(ca_cert_path))
+            self.logger.info("CA cert path after expansion: '{0}'".format(ca_cert_path))
             if not os.path.exists(ca_cert_path):
                 self.logger.error(
                     "CA cert file not found: {0} - check CRIBL_HEC_CA_CERT path".format(ca_cert_path))
